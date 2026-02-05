@@ -1,6 +1,9 @@
 """Main FastAPI application for the web scraper."""
 
-from fastapi import FastAPI
+import os
+
+import httpx
+from fastapi import FastAPI, HTTPException
 
 from models import ScrapRequest, ScrapResponse
 from scraper import (
@@ -52,3 +55,62 @@ def firestore_test():
     ref = db.collection("audits").document()
     ref.set({"hello": "world"})
     return {"ok": True, "id": ref.id}
+
+
+@app.get("/openai-test")
+def openai_test():
+    """
+    Quick test route to verify OpenAI API connectivity.
+    Expects OPENAI_API_KEY in environment.
+    """
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=500,
+            detail="OPENAI_API_KEY is not set in the environment.",
+        )
+
+    model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+    url = "https://api.openai.com/v1/responses"
+    payload = {
+        "model": model,
+        "input": "ping",
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        resp = httpx.post(url, json=payload, headers=headers, timeout=20.0)
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=exc.response.status_code,
+            detail=exc.response.text,
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"OpenAI request failed: {exc}",
+        ) from exc
+
+    data = resp.json()
+    text_out = ""
+    for item in data.get("output", []):
+        if item.get("type") == "message":
+            for content in item.get("content", []):
+                if content.get("type") == "output_text":
+                    text_out += content.get("text", "")
+
+    return {
+        "ok": True,
+        "id": data.get("id"),
+        "model": data.get("model"),
+        "status": data.get("status"),
+        "text": text_out,
+    }
+
+
+
+
