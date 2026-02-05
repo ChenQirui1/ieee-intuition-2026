@@ -1,3 +1,6 @@
 # Firebase Admin keys (DO NOT COMMIT)
 server/secrets/
 server/secrets/*.json
+
+
+__pycache__

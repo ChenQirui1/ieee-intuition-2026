@@ -41,21 +41,40 @@ db = get_firestore()
 class ScrapRequest(BaseModel):
     url: AnyUrl = Field(..., description="http(s) URL to scrape")
 
-class Headings(BaseModel):
-    h1: List[str] = []
-    h2: List[str] = []
-    h3: List[str] = []
+class PageMeta(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    canonical: Optional[str] = None
+    lang: Optional[str] = None
+
+class LinkItem(BaseModel):
+    href: str
+    text: str
+    is_internal: bool
+
+class ImageItem(BaseModel):
+    src: str
+    alt: str = ""
+
+class ContentBlock(BaseModel):
+    type: str  # heading|paragraph|list|table|quote|code|hr
+    level: Optional[int] = None          # heading level (1-6)
+    depth: Optional[int] = None          # nesting depth for lists
+    text: Optional[str] = None           # for heading/paragraph/quote/code
+    items: Optional[List[str]] = None    # for list
+    headers: Optional[List[str]] = None  # for table
+    rows: Optional[List[List[str]]] = None  # for table
 
 class ScrapResponse(BaseModel):
     ok: bool = True
     url: str
-    title: Optional[str] = None
-    description: Optional[str] = None
-    headings: Headings
-    text: str  # trimmed plain text snippet
+    meta: PageMeta
+    blocks: List[ContentBlock]
+    links: List[LinkItem] = []
+    images: List[ImageItem] = []
 
 
-# ---------- SSRF / safety helpers ----------
+# ---------------- SSRF protection ----------------
 
 BLOCKED_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
@@ -76,7 +95,6 @@ def _is_private_ip(ip: str) -> bool:
 def assert_public_hostname(hostname: str) -> None:
     if hostname.lower() in BLOCKED_HOSTS:
         raise HTTPException(status_code=400, detail="URL hostname is not allowed")
-
     try:
         infos = socket.getaddrinfo(hostname, None)
     except socket.gaierror:
@@ -91,7 +109,7 @@ def assert_public_hostname(hostname: str) -> None:
             raise HTTPException(status_code=400, detail="URL resolves to a private/blocked IP")
 
 
-# ---------- Requests session with retries ----------
+# ---------------- Requests session ----------------
 
 def build_session() -> requests.Session:
     s = requests.Session()
@@ -110,12 +128,33 @@ def build_session() -> requests.Session:
 SESSION = build_session()
 
 
-# ---------- Scraping helpers ----------
+# ---------------- Extraction helpers ----------------
 
 def _clean_text(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
-def extract_meta_description(soup: BeautifulSoup) -> Optional[str]:
+def _is_internal_link(base_url: str, href: str) -> bool:
+    try:
+        b = urlparse(base_url)
+        u = urlparse(href)
+        if not u.netloc:
+            return True
+        return u.netloc == b.netloc
+    except Exception:
+        return False
+
+def remove_non_content(soup: BeautifulSoup) -> None:
+    # Remove heavy/noisy tags. Keep more “raw” by reducing this list if desired.
+    for tag in soup(["script", "style", "noscript", "svg", "canvas", "iframe"]):
+        tag.decompose()
+
+def select_root(soup: BeautifulSoup) -> Tag:
+    return soup.find("main") or soup.find("article") or soup.body or soup
+
+def extract_meta(soup: BeautifulSoup, base_url: str) -> PageMeta:
+    title = _clean_text(soup.title.get_text()) if soup.title and soup.title.get_text() else None
+
+    desc = None
     for attrs in (
         {"name": "description"},
         {"property": "og:description"},
@@ -123,34 +162,187 @@ def extract_meta_description(soup: BeautifulSoup) -> Optional[str]:
     ):
         tag = soup.find("meta", attrs=attrs)
         if tag and tag.get("content"):
-            val = _clean_text(tag["content"])
-            if val:
-                return val
-    return None
+            desc = _clean_text(tag["content"])
+            if desc:
+                break
 
-def extract_headings(soup: BeautifulSoup) -> Headings:
-    def grab(tag: str) -> List[str]:
-        out: List[str] = []
-        for el in soup.find_all(tag):
-            t = _clean_text(el.get_text(" ", strip=True))
-            if t:
-                out.append(t)
-        return out
+    canonical = None
+    canon = soup.find("link", rel=lambda x: x and "canonical" in x)
+    if canon and canon.get("href"):
+        canonical = urljoin(base_url, canon["href"])
 
-    return Headings(h1=grab("h1"), h2=grab("h2"), h3=grab("h3"))
+    html_tag = soup.find("html")
+    lang = html_tag.get("lang") if html_tag else None
 
-def extract_text(soup: BeautifulSoup, max_len: int = 4000) -> str:
-    for tag in soup(["script", "style", "noscript", "svg", "canvas", "iframe"]):
-        tag.decompose()
+    return PageMeta(title=title, description=desc, canonical=canonical, lang=lang)
 
-    target = soup.find("main") or soup.find("article") or soup.body or soup
-    text = _clean_text(target.get_text(" ", strip=True))
-    return text[:max_len]
+def extract_links_and_images(root: Tag, base_url: str, max_links=600, max_images=300):
+    links: List[LinkItem] = []
+    images: List[ImageItem] = []
+
+    for a in root.find_all("a"):
+        href = a.get("href")
+        if not href:
+            continue
+        abs_href = urljoin(base_url, href)
+        if abs_href.startswith(("mailto:", "tel:", "javascript:", "#")):
+            continue
+        text = _clean_text(a.get_text(" ", strip=True))
+        links.append(
+            LinkItem(
+                href=abs_href,
+                text=text,
+                is_internal=_is_internal_link(base_url, abs_href),
+            )
+        )
+        if len(links) >= max_links:
+            break
+
+    for img in root.find_all("img"):
+        src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
+        if not src:
+            continue
+        abs_src = urljoin(base_url, src)
+        alt = _clean_text(img.get("alt") or "")
+        images.append(ImageItem(src=abs_src, alt=alt))
+        if len(images) >= max_images:
+            break
+
+    return links, images
+
+def _block_text(el: Tag) -> str:
+    # join text while preserving reasonable spacing
+    return _clean_text(el.get_text(" ", strip=True))
+
+def _extract_list(el: Tag, max_items=200) -> List[str]:
+    items: List[str] = []
+    for li in el.find_all("li", recursive=True):
+        t = _clean_text(li.get_text(" ", strip=True))
+        if t:
+            items.append(t)
+        if len(items) >= max_items:
+            break
+    return items
+
+def _extract_table(el: Tag, max_rows=200, max_cols=30):
+    headers: List[str] = []
+    ths = el.find_all("th")
+    if ths:
+        headers = [_clean_text(th.get_text(" ", strip=True)) for th in ths][:max_cols]
+        headers = [h for h in headers if h]
+
+    rows: List[List[str]] = []
+    for tr in el.find_all("tr"):
+        cells = tr.find_all(["td", "th"])
+        if not cells:
+            continue
+        row = [_clean_text(c.get_text(" ", strip=True)) for c in cells][:max_cols]
+        if any(row):
+            rows.append(row)
+        if len(rows) >= max_rows:
+            break
+
+    return headers, rows
+
+def extract_blocks_in_order(root: Tag, max_blocks: int = 800) -> List[ContentBlock]:
+    """
+    Walk the DOM in document order and emit "useful" blocks.
+    Strategy: iterate over a curated set of block-level tags in order of appearance.
+    """
+    blocks: List[ContentBlock] = []
+
+    # Consider these tags as block-level content for LLM ingestion
+    block_tags = {
+        "h1","h2","h3","h4","h5","h6",
+        "p",
+        "ul","ol",
+        "table",
+        "blockquote",
+        "pre","code",
+        "hr",
+    }
+
+    # Find all candidates in document order
+    candidates = root.find_all(lambda t: isinstance(t, Tag) and t.name in block_tags)
+
+    for el in candidates:
+        if len(blocks) >= max_blocks:
+            break
+
+        name = el.name
+
+        # Skip empty / invisible-ish blocks
+        if name in {"p","blockquote"}:
+            txt = _block_text(el)
+            if not txt:
+                continue
+
+        if name in {"h1","h2","h3","h4","h5","h6"}:
+            level = int(name[1])
+            txt = _block_text(el)
+            if txt:
+                blocks.append(ContentBlock(type="heading", level=level, text=txt))
+            continue
+
+        if name == "p":
+            txt = _block_text(el)
+            if txt:
+                blocks.append(ContentBlock(type="paragraph", text=txt))
+            continue
+
+        if name in {"ul","ol"}:
+            items = _extract_list(el)
+            if items:
+                # approximate nesting depth by counting parent lists
+                depth = 0
+                parent = el.parent
+                while isinstance(parent, Tag):
+                    if parent.name in {"ul","ol"}:
+                        depth += 1
+                    parent = parent.parent
+                blocks.append(ContentBlock(type="list", depth=depth, items=items))
+            continue
+
+        if name == "table":
+            headers, rows = _extract_table(el)
+            if headers or rows:
+                blocks.append(ContentBlock(type="table", headers=headers or None, rows=rows or None))
+            continue
+
+        if name == "blockquote":
+            txt = _block_text(el)
+            if txt:
+                blocks.append(ContentBlock(type="quote", text=txt))
+            continue
+
+        if name in {"pre","code"}:
+            # pre/code can be noisy; keep but trim per-block
+            txt = el.get_text("\n", strip=True)
+            txt = txt.strip()
+            if txt:
+                blocks.append(ContentBlock(type="code", text=txt[:4000]))
+            continue
+
+        if name == "hr":
+            blocks.append(ContentBlock(type="hr"))
+            continue
+
+    # Optional: light dedupe of consecutive identical paragraphs/headings
+    compacted: List[ContentBlock] = []
+    last_sig = None
+    for b in blocks:
+        sig = (b.type, b.level, b.text, tuple(b.items) if b.items else None)
+        if sig == last_sig:
+            continue
+        compacted.append(b)
+        last_sig = sig
+
+    return compacted
 
 
-# ---------- Route ----------
+# ---------------- Route ----------------
 
-MAX_BYTES = 2_000_000  # 2MB cap to avoid huge downloads
+MAX_BYTES = 2_000_000  # 2MB cap
 
 @app.post("/scrap", response_model=ScrapResponse)
 def scrap(req: ScrapRequest):
@@ -159,7 +351,7 @@ def scrap(req: ScrapRequest):
     try:
         r = SESSION.get(
             str(req.url),
-            timeout=(5, 12),  # (connect, read)
+            timeout=(5, 12),
             allow_redirects=True,
             stream=True,
             headers={
@@ -179,8 +371,7 @@ def scrap(req: ScrapRequest):
     if "text/html" not in content_type:
         raise HTTPException(status_code=415, detail=f"Unsupported content-type: {content_type}")
 
-    # Read with size cap
-    chunks = []
+    chunks: List[bytes] = []
     total = 0
     for chunk in r.iter_content(chunk_size=64 * 1024):
         if not chunk:
@@ -191,40 +382,28 @@ def scrap(req: ScrapRequest):
         chunks.append(chunk)
 
     raw = b"".join(chunks)
-    # Let requests guess encoding; fallback to utf-8
     r.encoding = r.encoding or "utf-8"
     html = raw.decode(r.encoding, errors="replace")
 
     soup = BeautifulSoup(html, "html.parser")
 
-    title = _clean_text(soup.title.get_text()) if soup.title and soup.title.get_text() else None
-    description = extract_meta_description(soup)
-    headings = extract_headings(soup)
-    text = extract_text(soup)
+    meta = extract_meta(soup, str(req.url))
 
-    # OPTIONAL: save to Firestore (remove if you don't want auto-saving)
-    try:
-        db.collection("audits").add(
-            { 
-                "url": str(req.url),
-                "title": title,
-                "description": description,
-                "headings": headings.model_dump(),
-                "text": text,
-                "ok": True,
-            }
-        )
-    except Exception:
-        # Don't break scraping if Firestore write fails (hackathon-friendly)
-        pass
+    # Clean noise for better LLM-friendly blocks
+    remove_non_content(soup)
+
+    root = select_root(soup)
+
+    blocks = extract_blocks_in_order(root)
+    links, images = extract_links_and_images(root, str(req.url))
 
     return ScrapResponse(
         ok=True,
         url=str(req.url),
-        title=title,
-        description=description,
-        headings=headings,
-        text=text,
+        meta=meta,
+        blocks=blocks,
+        links=links,
+        images=images,
     )
 
 
