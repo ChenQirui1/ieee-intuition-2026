@@ -1,15 +1,16 @@
-"""Pydantic models for the scraper API."""
+"""Pydantic models for the scraper + simplifier API."""
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import AnyUrl, BaseModel, Field
 
 
+# ----------------- Scraper models -----------------
+
 class PageMeta(BaseModel):
     """Metadata extracted from a page."""
-
     title: Optional[str] = None
     description: Optional[str] = None
     canonical: Optional[str] = None
@@ -18,7 +19,6 @@ class PageMeta(BaseModel):
 
 class LinkItem(BaseModel):
     """A link found on the page."""
-
     href: str
     text: str
     is_internal: bool
@@ -26,139 +26,89 @@ class LinkItem(BaseModel):
 
 class ImageItem(BaseModel):
     """An image found on the page."""
-
     src: str
     alt: str = ""
 
 
 class ContentBlock(BaseModel):
     """A block of content (heading, paragraph, list, table, etc.)."""
-
     type: str  # heading|paragraph|list|table|quote|code|hr
-    level: Optional[int] = None  # heading level (1-6)
-    depth: Optional[int] = None  # nesting depth for lists
-    text: Optional[str] = None  # for heading/paragraph/quote/code
-    items: Optional[List[str]] = None  # for list
-    headers: Optional[List[str]] = None  # for table
-    rows: Optional[List[List[str]]] = None  # for table
+    level: Optional[int] = None
+    depth: Optional[int] = None
+    text: Optional[str] = None
+    items: Optional[List[str]] = None
+    headers: Optional[List[str]] = None
+    rows: Optional[List[List[str]]] = None
 
 
-# -------- Existing endpoints --------
-
-class AnalyzeRequest(BaseModel):
-    """Request model for analyzing a URL (combines scrape + ask in one call)."""
-
-    url: AnyUrl = Field(..., description="URL to scrape and analyze")
-    question: Optional[str] = Field(None, description="Optional: Specific question about the content")
+class ScrapRequest(BaseModel):
+    url: AnyUrl = Field(..., description="http(s) URL to scrape")
 
 
-class AnalyzeResponse(BaseModel):
-    """Response model for URL analysis (scrape + ask combined)."""
-
+class ScrapResponse(BaseModel):
     ok: bool = True
     url: str
-    title: Optional[str] = None
-    description: Optional[str] = None
-    blocks_count: int
-    summary: str
-    question: Optional[str] = None
-    model: str
+    meta: PageMeta
+    blocks: List[ContentBlock]
+    links: List[LinkItem]
+    images: List[ImageItem]
 
 
-class AccessibleResponse(BaseModel):
-    """Response for accessibility-optimized content analysis."""
+# ----------------- Simplify (3 modes) -----------------
 
-    ok: bool = True
-    url: str
-    title: Optional[str] = None
-    main_sections: List[str]
-    key_facts: List[str]
-    readability_level: str
-    summary_simple: str
-    summary_detailed: str
-    estimated_read_time_minutes: int
-    has_images: bool
-    has_tables: bool
-    model: str
+Mode = Literal["easy_read", "checklist", "step_by_step", "all"]
 
-
-# -------- Extension-friendly endpoints --------
 
 class SimplifyRequest(BaseModel):
-    """Request for adaptive simplification (extension/web overlay)."""
-
-    url: AnyUrl = Field(..., description="URL to simplify")
-    mode: str = Field(
-        "easy_read",
-        description="Presentation mode: easy_read|checklist|wizard|faq (backend returns all, UI chooses)",
-    )
-    session_id: Optional[str] = Field(None, description="Optional session identifier (no-auth hackathon)")
-
-
-class SimplifiedSection(BaseModel):
-    id: str
-    heading: str
-    easy_read: List[str] = []
-    key_points: List[str] = []
-
-
-class WizardStep(BaseModel):
-    step: int
-    text: str
-
-
-class GlossaryItem(BaseModel):
-    term: str
-    definition: str
+    url: AnyUrl
+    mode: Mode = "all"
+    session_id: Optional[str] = None
+    force_regen: bool = False
 
 
 class SimplifyResponse(BaseModel):
     ok: bool = True
     url: str
     page_id: str
-    simplification_id: Optional[str] = None
-    mode: str
-    title: Optional[str] = None
-    tldr: str = ""
-    sections: List[SimplifiedSection] = []
-    checklist: List[str] = []
-    steps: List[WizardStep] = []
-    glossary: List[GlossaryItem] = []
-    warnings: List[str] = []
+    source_text_hash: str
     model: str
+    outputs: Dict[str, Any]  # keys: easy_read, checklist, step_by_step
+    simplification_ids: Dict[str, str]  # mode -> simplification doc id
+
+
+# ----------------- Contextual chatbot -----------------
+
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant", "system"]
+    content: str
 
 
 class ChatRequest(BaseModel):
-    url: AnyUrl = Field(..., description="URL context for the question")
-    page_id: Optional[str] = Field(None, description="Optional scrape doc id (to avoid rescrape)")
-    simplification_id: Optional[str] = Field(None, description="Optional simplification doc id")
-    mode: str = Field("easy_read", description="User's current mode (helps tone/format)")
-    section_id: Optional[str] = Field(None, description="Optional section identifier the user is asking about")
-    question: str = Field(..., min_length=1, description="User question")
-    session_id: Optional[str] = Field(None, description="Optional session identifier (no-auth hackathon)")
+    """
+    Contextual chat request.
+
+    For true section-level context:
+    - pass `section_text` from the overlay card the user clicked
+      (best UX + shortest prompt + most accurate).
+    """
+    url: Optional[AnyUrl] = None
+    page_id: Optional[str] = None
+
+    mode: Literal["easy_read", "checklist", "step_by_step"] = "easy_read"
+    simplification_id: Optional[str] = None
+
+    # NEW (Section-level context)
+    section_id: Optional[str] = Field(None, description="Optional section identifier in your UI")
+    section_text: Optional[str] = Field(None, description="The exact text the user is asking about")
+
+    message: str = Field(..., min_length=1)
+    history: List[ChatMessage] = []
+    session_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
     ok: bool = True
-    answer: str
     model: str
-
-
-class MetricsRequest(BaseModel):
-    url: AnyUrl
+    answer: str
     page_id: Optional[str] = None
     simplification_id: Optional[str] = None
-    session_id: Optional[str] = None
-
-    event: str = Field(..., description="e.g. simplify_loaded|asked_question|completed_task")
-    mode: str = Field("easy_read", description="UI mode at time of event")
-
-    clicks: int = 0
-    scrollPx: int = 0
-    questions: int = 0
-    durationMs: int = 0
-
-
-class MetricsResponse(BaseModel):
-    ok: bool = True
-    id: Optional[str] = None

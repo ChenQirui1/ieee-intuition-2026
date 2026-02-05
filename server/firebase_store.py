@@ -1,75 +1,67 @@
-"""Firebase initialization and Firestore operations."""
+"""Firebase initialization + Firestore operations for pages + simplifications."""
 
 from __future__ import annotations
 
-import os
 import hashlib
+import os
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import firebase_admin
 from firebase_admin import credentials
 from firebase_admin import firestore as fb_firestore
 
 
-# ---------------- Mock Firestore (dev only) ----------------
+# ---------------- Mock Firestore (local dev only) ----------------
 
-class MockFirestore:
-    """Mock Firestore client for local testing without Firebase credentials."""
+class MockDocSnap:
+    def __init__(self, doc_id: str, data: Optional[Dict[str, Any]]):
+        self.id = doc_id
+        self._data = data
 
-    def __init__(self):
-        self.data: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    @property
+    def exists(self) -> bool:
+        return self._data is not None
 
-    def collection(self, name: str):
-        return MockCollection(name, self.data)
-
-
-class MockCollection:
-    def __init__(self, name: str, data: Dict[str, Dict[str, Dict[str, Any]]]):
-        self.name = name
-        self.data = data
-        self.data.setdefault(name, {})
-
-    def document(self, doc_id: Optional[str] = None):
-        if doc_id is None:
-            import uuid
-            doc_id = str(uuid.uuid4())
-        return MockDocument(self.name, doc_id, self.data)
-
-    def add(self, doc: Dict[str, Any]):
-        ref = self.document()
-        ref.set(doc)
-        return ref, ref.id
+    def to_dict(self) -> Optional[Dict[str, Any]]:
+        return self._data
 
 
 class MockDocument:
-    def __init__(self, collection_name: str, doc_id: str, data: Dict[str, Dict[str, Dict[str, Any]]]):
+    def __init__(self, collection_name: str, doc_id: str, store: Dict[str, Dict[str, Any]]):
         self.collection_name = collection_name
         self.id = doc_id
-        self.data = data
-        self.data.setdefault(collection_name, {})
+        self.store = store
 
-    def set(self, doc: Dict[str, Any], merge: bool = False):
-        col = self.data[self.collection_name]
+    def set(self, data: Dict[str, Any], merge: bool = False):
+        col = self.store.setdefault(self.collection_name, {})
         if merge and self.id in col and isinstance(col[self.id], dict):
             merged = dict(col[self.id])
-            merged.update(doc)
+            merged.update(data)
             col[self.id] = merged
         else:
-            col[self.id] = doc
-        print(f"[MOCK] Saved to {self.collection_name}/{self.id}")
+            col[self.id] = data
 
-    def get(self) -> Optional[Dict[str, Any]]:
-        return self.data.get(self.collection_name, {}).get(self.id)
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    def get(self) -> MockDocSnap:
+        col = self.store.setdefault(self.collection_name, {})
+        return MockDocSnap(self.id, col.get(self.id))
 
 
-def server_timestamp(db_obj) -> Any:
-    """Use Firestore SERVER_TIMESTAMP for real DB; ISO timestamp for mock."""
-    return _now_iso() if isinstance(db_obj, MockFirestore) else fb_firestore.SERVER_TIMESTAMP
+class MockCollection:
+    def __init__(self, name: str, store: Dict[str, Dict[str, Any]]):
+        self.name = name
+        self.store = store
+
+    def document(self, doc_id: str):
+        return MockDocument(self.name, doc_id, self.store)
+
+
+class MockFirestore:
+    def __init__(self):
+        self.store: Dict[str, Dict[str, Any]] = {}
+
+    def collection(self, name: str) -> MockCollection:
+        return MockCollection(name, self.store)
 
 
 # ---------------- Firestore init ----------------
@@ -78,10 +70,8 @@ def get_firestore():
     """
     Initializes Firebase Admin (once) and returns a Firestore client.
 
-    - Requires GOOGLE_APPLICATION_CREDENTIALS (service account JSON path).
+    - Requires GOOGLE_APPLICATION_CREDENTIALS pointing to service account JSON.
     - For local-only dev without Firebase, set USE_MOCK_FIREBASE=true.
-
-    NOTE: Do NOT silently fall back to mock unless explicitly requested.
     """
     if os.getenv("USE_MOCK_FIREBASE", "false").lower() == "true":
         return MockFirestore()
@@ -91,8 +81,8 @@ def get_firestore():
         if not cred_path:
             raise RuntimeError(
                 "GOOGLE_APPLICATION_CREDENTIALS is not set. "
-                "Set it to the full path of your Firebase service account JSON, "
-                "or set USE_MOCK_FIREBASE=true for local mock."
+                "Set it to the full path of your Firebase service account JSON "
+                "or set USE_MOCK_FIREBASE=true."
             )
         firebase_admin.initialize_app(credentials.Certificate(cred_path))
 
@@ -102,141 +92,165 @@ def get_firestore():
 db = get_firestore()
 
 
-# ---------------- Helpers ----------------
+# ---------------- Utilities ----------------
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def server_timestamp() -> Any:
+    """Real Firestore uses SERVER_TIMESTAMP; mock uses ISO string."""
+    return _now_iso() if isinstance(db, MockFirestore) else fb_firestore.SERVER_TIMESTAMP
+
 
 def sha256_hex(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
 
-def _dump(x: Any) -> Any:
+def dump(x: Any) -> Any:
     return x.model_dump() if hasattr(x, "model_dump") else x
 
 
-def _trim_list(items: Any, max_items: int = 200, max_total_chars: int = 80_000):
-    """Prevent Firestore 1MB doc limit from exploding on large pages."""
-    out = []
-    total = 0
-    for x in (items or [])[:max_items]:
-        item = _dump(x)
-        s = str(item)
-        if total + len(s) > max_total_chars:
-            break
-        out.append(item)
-        total += len(s)
-    return out
+# ---------------- Deterministic IDs ----------------
+
+def page_id_for_url(url: str) -> str:
+    return sha256_hex(url)
 
 
-# ---------------- Save / Fetch ----------------
+def simplification_id_for(*, url: str, mode: str, source_text_hash: str) -> str:
+    return sha256_hex(f"{url}|{mode}|{source_text_hash}")
 
-def save_scrape(
+
+# ---------------- Pages ----------------
+
+def get_or_create_page(
+    *,
+    url: str,
+    session_id: Optional[str] = None,
+    collection: str = "pages",
+) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """
+    Convenience helper:
+
+    - Always returns a deterministic page_id for this url.
+    - If the page doc exists, returns (page_id, doc).
+    - If not, creates a placeholder doc and returns (page_id, placeholder_doc).
+
+    This is useful for the frontend/extension flow where you want a stable page_id early.
+    """
+    page_id = page_id_for_url(url)
+    ref = db.collection(collection).document(page_id)
+    snap = ref.get()
+
+    if getattr(snap, "exists", False):
+        return page_id, snap.to_dict()
+
+    placeholder: Dict[str, Any] = {
+        "url": url,
+        "session_id": session_id,
+        "status": "placeholder",
+        "created_at": server_timestamp(),
+        "updated_at": server_timestamp(),
+    }
+    ref.set(placeholder, merge=True)
+    return page_id, placeholder
+
+
+def save_page(
     *,
     url: str,
     meta: Any,
     blocks: Any,
     links: Any,
     images: Any,
-    collection: str = "pages",
+    source_text: str,
+    source_text_hash: str,
     session_id: Optional[str] = None,
+    collection: str = "pages",
 ) -> str:
-    """Save a scrape result to Firestore. Returns created doc id."""
+    """
+    Upsert page by deterministic page_id = sha256(url).
+    """
+    page_id = page_id_for_url(url)
 
     doc: Dict[str, Any] = {
         "url": url,
-        "created_at": server_timestamp(db),
         "session_id": session_id,
-        "meta": _dump(meta),
-        "blocks": _trim_list(blocks, max_items=200, max_total_chars=90_000),
-        "links": _trim_list(links, max_items=300, max_total_chars=30_000),
-        "images": _trim_list(images, max_items=200, max_total_chars=30_000),
-        "ok": True,
+        "status": "ready",
+        "meta": dump(meta),
+        "blocks": [dump(b) for b in (blocks or [])],
+        "links": [dump(l) for l in (links or [])],
+        "images": [dump(i) for i in (images or [])],
+        "source_text": source_text,
+        "source_text_hash": source_text_hash,
+        "updated_at": server_timestamp(),
     }
 
-    ref = db.collection(collection).document()
-    ref.set(doc)
-    return ref.id
+    db.collection(collection).document(page_id).set(doc, merge=True)
+    return page_id
 
 
-def get_document(collection: str, doc_id: str) -> Optional[Dict[str, Any]]:
-    """Fetch a document dict by id. Works for both real and mock Firestore."""
-    if isinstance(db, MockFirestore):
-        return db.collection(collection).document(doc_id).get()
-
-    snap = db.collection(collection).document(doc_id).get()
+def get_page(*, page_id: str, collection: str = "pages") -> Optional[Dict[str, Any]]:
+    """
+    Fetch a page doc by id.
+    Works for both real and mock Firestore.
+    """
+    snap = db.collection(collection).document(page_id).get()
     if not getattr(snap, "exists", False):
         return None
     return snap.to_dict()
 
 
+# ---------------- Simplifications (cached per mode+hash) ----------------
+
+def get_simplification(
+    *,
+    url: str,
+    mode: str,
+    source_text_hash: str,
+    collection: str = "simplifications",
+) -> Optional[Dict[str, Any]]:
+    """
+    Fetch a cached simplification by deterministic key (url|mode|source_hash).
+    Returns dict with an extra field: _id (the doc id).
+    """
+    sid = simplification_id_for(url=url, mode=mode, source_text_hash=source_text_hash)
+    snap = db.collection(collection).document(sid).get()
+    if not getattr(snap, "exists", False):
+        return None
+    data = snap.to_dict() or {}
+    data["_id"] = sid
+    return data
+
+
 def save_simplification(
     *,
-    page_id: str,
     url: str,
+    page_id: str,
     source_text_hash: str,
-    simplified_text: str,
-    mode: str = "easy_read",
-    target_reading_level: str = "easy",
-    model: str = "unknown",
-    collection: str = "simplifications",
+    mode: str,
+    output: Dict[str, Any],
+    model: str,
     session_id: Optional[str] = None,
-    extra_output: Optional[Dict[str, Any]] = None,
+    collection: str = "simplifications",
 ) -> str:
-    """Save an LLM simplification run to Firestore. Returns created doc id."""
+    """
+    Upsert simplification by deterministic id = sha256(url|mode|source_hash).
+    """
+    sid = simplification_id_for(url=url, mode=mode, source_text_hash=source_text_hash)
 
     doc: Dict[str, Any] = {
-        "page_id": page_id,
         "url": url,
+        "page_id": page_id,
         "source_text_hash": source_text_hash,
-        "created_at": server_timestamp(db),
+        "mode": mode,
         "session_id": session_id,
-        "request": {
-            "mode": mode,
-            "target_reading_level": target_reading_level,
-        },
-        "llm": {
-            "provider": "openai",
-            "model": model,
-        },
-        "output": {
-            "simplified_text": simplified_text,
-            **(extra_output or {}),
-        },
+        "llm": {"provider": "openai", "model": model},
+        "output": output,
         "status": "success",
         "error": None,
+        "updated_at": server_timestamp(),
     }
 
-    ref = db.collection(collection).document()
-    ref.set(doc)
-    return ref.id
-
-
-def save_metrics(
-    *,
-    url: str,
-    event: str,
-    mode: str,
-    clicks: int = 0,
-    scrollPx: int = 0,
-    questions: int = 0,
-    durationMs: int = 0,
-    page_id: Optional[str] = None,
-    simplification_id: Optional[str] = None,
-    session_id: Optional[str] = None,
-    collection: str = "metrics",
-) -> str:
-    doc: Dict[str, Any] = {
-        "url": url,
-        "page_id": page_id,
-        "simplification_id": simplification_id,
-        "session_id": session_id,
-        "event": event,
-        "mode": mode,
-        "clicks": int(clicks or 0),
-        "scrollPx": int(scrollPx or 0),
-        "questions": int(questions or 0),
-        "durationMs": int(durationMs or 0),
-        "created_at": server_timestamp(db),
-    }
-
-    ref = db.collection(collection).document()
-    ref.set(doc)
-    return ref.id
+    db.collection(collection).document(sid).set(doc, merge=True)
+    return sid

@@ -1,71 +1,128 @@
-"""Main FastAPI application for the web scraper + accessibility overlay endpoints."""
+"""Main FastAPI application for scraper + 3-mode simplifier + contextual chat."""
 
 from __future__ import annotations
 
 import json
 import os
 import re
-import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from models import (
-    AnalyzeRequest,
-    AnalyzeResponse,
-    AccessibleResponse,
-    SimplifyRequest,
-    SimplifyResponse,
-    SimplifiedSection,
-    WizardStep,
-    GlossaryItem,
     ChatRequest,
     ChatResponse,
-    MetricsRequest,
-    MetricsResponse,
+    ScrapRequest,
+    ScrapResponse,
+    SimplifyRequest,
+    SimplifyResponse,
 )
 from scraper import (
     assert_public_hostname,
-    extract_meta,
     extract_blocks_in_order,
     extract_links_and_images,
+    extract_meta,
+    fetch_and_parse_html,
     remove_non_content,
     select_root,
-    fetch_and_parse_html,
 )
 from firebase_store import (
     db,
-    save_scrape,
+    get_page,
+    get_simplification,
+    page_id_for_url,
+    save_page,
     save_simplification,
-    save_metrics,
     sha256_hex,
-    get_document,
 )
 
 
-app = FastAPI(title="Scraper API")
+app = FastAPI(title="Scraper + Accessibility Simplifier API")
 
-# Hackathon/dev: allow the extension + localhost UIs to call your API.
-# Tighten this for production.
+# ----------------- (1) CORS: extension-friendly + Authorization header -----------------
+#
+# Chrome extensions send Origin like: chrome-extension://<extension_id>
+# For hackathon, allow extension + local dev sites.
+#
+# Important: If allow_credentials=True, you cannot use allow_origins=["*"] safely.
+# We don't need cookies for this hackathon, so allow_credentials=False is ideal.
+#
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=[
+        "http://127.0.0.1:3000",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+    ],
+    allow_origin_regex=r"^chrome-extension://.*$",
+    allow_credentials=False,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*"],  # includes Authorization
 )
 
 
-# ---------------- Utilities ----------------
+# ----------------- OpenAI (OLD endpoint) helpers -----------------
 
-OPENAI_URL = "https://api.openai.com/v1/chat/completions"  # keep your existing endpoint
-DEFAULT_MODEL = "gpt-3.5-turbo"  # keep your existing default
+OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
 
-def _safe_trim_blocks(blocks: List[Any], max_blocks: int = 200, max_total_chars: int = 80_000):
-    """Prevent massive pages from exceeding Firestore doc limits."""
+def get_openai_key() -> str:
+    key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    if not key:
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY is not set in the environment.")
+    return key
+
+
+def get_openai_model() -> str:
+    return os.getenv("OPENAI_MODEL", "gpt-3.5-turbo-0125")
+
+
+def call_openai_chat(*, messages: List[Dict[str, str]], temperature: float = 0.2) -> Tuple[str, str]:
+    api_key = get_openai_key()
+    model = get_openai_model()
+
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+    try:
+        resp = httpx.post(OPENAI_URL, json=payload, headers=headers, timeout=45.0)
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        # Do not leak headers; response body is OK (it won't contain your key)
+        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.text) from exc
+    except Exception:
+        # Never echo raw exception (can accidentally include header values)
+        raise HTTPException(status_code=502, detail="OpenAI request failed")
+
+    data = resp.json()
+    content = ""
+    if data.get("choices"):
+        content = data["choices"][0].get("message", {}).get("content", "") or ""
+    return content, data.get("model", model)
+
+
+def parse_json_loose(text: str) -> Dict[str, Any]:
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if not m:
+        raise ValueError("Model did not return JSON.")
+    return json.loads(m.group(0))
+
+
+# ----------------- Scrape helpers -----------------
+
+def _safe_trim_blocks(blocks, max_blocks: int = 200, max_total_chars: int = 80_000):
     trimmed = []
     total = 0
     for b in blocks[:max_blocks]:
@@ -78,87 +135,44 @@ def _safe_trim_blocks(blocks: List[Any], max_blocks: int = 200, max_total_chars:
     return trimmed
 
 
-def _dump_list(objs: List[Any], limit: int) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    for x in (objs or [])[:limit]:
-        if isinstance(x, dict):
-            out.append(x)
-        elif hasattr(x, "model_dump"):
-            out.append(x.model_dump())
-    return out
-
-
-def _blocks_to_plain_text(blocks_data: List[Dict[str, Any]], max_chars: int = 12_000) -> str:
-    parts: List[str] = []
-    for b in blocks_data:
+def blocks_to_text(blocks: List[Dict[str, Any]], max_chars: int = 24_000) -> str:
+    out: List[str] = []
+    for b in blocks:
         t = b.get("type")
-        if t in ("heading", "paragraph", "quote", "code") and b.get("text"):
-            parts.append(str(b["text"]))
-        elif t == "list" and b.get("items"):
-            parts.extend([f"- {i}" for i in b.get("items", []) if i])
+        if t == "heading":
+            lvl = b.get("level") or 2
+            text = (b.get("text") or "").strip()
+            if text:
+                out.append(f"{'#' * min(6, max(1, lvl))} {text}")
+        elif t == "paragraph":
+            text = (b.get("text") or "").strip()
+            if text:
+                out.append(text)
+        elif t == "list":
+            items = b.get("items") or []
+            for it in items[:12]:
+                it = (it or "").strip()
+                if it:
+                    out.append(f"- {it}")
         elif t == "table":
             headers = b.get("headers") or []
-            rows = b.get("rows") or []
             if headers:
-                parts.append(" | ".join(headers))
-            for r in rows[:5]:
-                parts.append(" | ".join([str(c) for c in r]))
-        if sum(len(p) for p in parts) >= max_chars:
+                out.append("Table: " + " | ".join(headers[:8]))
+        elif t == "quote":
+            text = (b.get("text") or "").strip()
+            if text:
+                out.append(f"> {text}")
+
+        if sum(len(x) for x in out) > max_chars:
             break
-    text = "\n".join(parts)
-    return text[:max_chars]
+
+    return "\n".join(out)[:max_chars]
 
 
-def _openai_chat(messages: List[Dict[str, str]], *, model: Optional[str] = None, timeout: float = 35.0) -> Tuple[str, str]:
-    """Call OpenAI Chat Completions and return (content, resolved_model)."""
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="OPENAI_API_KEY is not set in the environment.")
-
-    chosen_model = os.getenv("OPENAI_MODEL", model or DEFAULT_MODEL)
-
-    payload = {
-        "model": chosen_model,
-        "messages": messages,
-        "temperature": 0.2,
-    }
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-
-    try:
-        resp = httpx.post(OPENAI_URL, json=payload, headers=headers, timeout=timeout)
-        resp.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.text) from exc
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"OpenAI request failed: {exc}") from exc
-
-    data = resp.json()
-    content = ""
-    if "choices" in data and data["choices"]:
-        content = data["choices"][0].get("message", {}).get("content", "") or ""
-    return content, data.get("model", chosen_model)
-
-
-_JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
-
-
-def _parse_json_best_effort(text: str) -> Dict[str, Any]:
-    """Best-effort parse: try full json, else extract first {...}."""
-    try:
-        return json.loads(text)
-    except Exception:
-        m = _JSON_RE.search(text)
-        if not m:
-            raise ValueError("No JSON object found in model output")
-        return json.loads(m.group(0))
-
-
-def _scrape(url: str):
-    """Scrape and return (meta, blocks, links, images) + jsonable versions."""
-    parsed_host = httpx.URL(url).host
-    if not parsed_host:
-        raise HTTPException(status_code=400, detail="Invalid URL")
-    assert_public_hostname(parsed_host)
+def scrape_url(url: str, session_id: str | None = None) -> Dict[str, Any]:
+    from urllib.parse import urlparse
+    host = urlparse(url).hostname or ""
+    assert_public_hostname(host)
 
     try:
         soup = fetch_and_parse_html(url)
@@ -166,530 +180,384 @@ def _scrape(url: str):
         raise HTTPException(status_code=502, detail=f"Failed to fetch/parse HTML: {e}")
 
     meta = extract_meta(soup, url)
-
     remove_non_content(soup)
     root = select_root(soup)
 
     blocks = extract_blocks_in_order(root)
     links, images = extract_links_and_images(root, url)
 
-    blocks_data = []
-    for block in _safe_trim_blocks(blocks, max_blocks=80, max_total_chars=90_000):
-        if isinstance(block, dict):
-            blocks_data.append(block)
-        elif hasattr(block, "model_dump"):
-            blocks_data.append(block.model_dump())
-        else:
-            blocks_data.append(block)
+    blocks_trim = _safe_trim_blocks(blocks)
+    blocks_data = [b.model_dump() if hasattr(b, "model_dump") else b for b in blocks_trim]
+    links_data = [l.model_dump() if hasattr(l, "model_dump") else l for l in (links or [])][:40]
+    images_data = [i.model_dump() if hasattr(i, "model_dump") else i for i in (images or [])][:20]
 
-    links_data = _dump_list(links, limit=30)
-    images_data = _dump_list(images, limit=20)
+    source_text = blocks_to_text(blocks_data)
+    source_text_hash = sha256_hex(source_text)
 
-    return meta, blocks, links, images, blocks_data, links_data, images_data
-
-
-# ---------------- Existing endpoints (kept) ----------------
-
-@app.post("/analyze", response_model=AnalyzeResponse)
-def analyze(req: AnalyzeRequest):
-    """Scrape a URL and immediately get an AI summary."""
-    meta, blocks, links, images, blocks_data, links_data, images_data = _scrape(str(req.url))
-
-    try:
-        save_scrape(
-            url=str(req.url),
-            meta=meta,
-            blocks=blocks_data,
-            links=links_data,
-            images=images_data,
-            collection="pages",
-        )
-    except Exception:
-        pass
-
-    context = {
-        "url": str(req.url),
-        "metadata": meta.model_dump() if hasattr(meta, "model_dump") else {},
-        "content_blocks": blocks_data[:50],
-    }
-
-    system_prompt = (
-        "You are an expert content analyst and summarizer. "
-        "Write a clear, well-structured summary with key points."
+    pid = save_page(
+        url=url,
+        meta=meta,
+        blocks=blocks_data,
+        links=links_data,
+        images=images_data,
+        source_text=source_text,
+        source_text_hash=source_text_hash,
+        session_id=session_id,
     )
 
-    if req.question:
-        user_prompt = (
-            "Analyze the content and answer the user's question.\n\n"
-            f"CONTENT:\n{json.dumps(context)}\n\n"
-            f"QUESTION: {req.question}\n\n"
-            "Return:\n1) Summary\n2) Direct answer to the question"
-        )
+    return {
+        "page_id": pid,
+        "url": url,
+        "meta": meta.model_dump() if hasattr(meta, "model_dump") else meta,
+        "blocks": blocks_data,
+        "links": links_data,
+        "images": images_data,
+        "source_text": source_text,
+        "source_text_hash": source_text_hash,
+    }
+
+
+# ----------------- Mode prompts -----------------
+
+def pick_important_links(links: List[Dict[str, Any]], max_links: int = 20) -> List[Dict[str, str]]:
+    cleaned = []
+    for l in links:
+        href = (l.get("href") or "").strip()
+        text = (l.get("text") or "").strip()
+        if not href:
+            continue
+        if href.startswith("mailto:") or href.startswith("javascript:"):
+            continue
+        label = text if text else href
+        cleaned.append({"label": label[:80], "url": href})
+        if len(cleaned) >= max_links:
+            break
+    return cleaned
+
+
+def prompt_for_mode(mode: str, *, title: str | None, source_text: str, links: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    base_system = (
+        "You are an accessibility assistant. "
+        "Rewrite complex webpages into formats that reduce cognitive load. "
+        "Return ONLY valid JSON. No markdown. No extra text. "
+        "Use plain language (around 8th grade). Short sentences. "
+        "Prefer bullets and steps. If jargon appears, define it in a glossary."
+    )
+
+    common_context = {"title": title, "source_text": source_text, "links": links}
+
+    if mode == "easy_read":
+        user = {
+            "task": "Create an EASY-READ version of the page.",
+            "output_schema": {
+                "mode": "easy_read",
+                "about": "one short sentence",
+                "key_points": ["3-7 bullets"],
+                "sections": [{"heading": "string", "bullets": ["bullets"]}],
+                "important_links": [{"label": "string", "url": "string"}],
+                "warnings": ["string"],
+                "glossary": [{"term": "string", "simple": "string"}],
+            },
+            "context": common_context,
+        }
+    elif mode == "checklist":
+        user = {
+            "task": "Extract a CHECKLIST that helps a user complete the page's main task.",
+            "output_schema": {
+                "mode": "checklist",
+                "goal": "string",
+                "requirements": [{"item": "string", "details": "string", "required": True}],
+                "documents": [{"item": "string", "details": "string"}],
+                "fees": [{"item": "string", "amount": "string"}],
+                "deadlines": [{"item": "string", "date": "string"}],
+                "actions": [{"item": "string", "url": "string"}],
+                "common_mistakes": ["string"],
+            },
+            "context": common_context,
+        }
+    elif mode == "step_by_step":
+        user = {
+            "task": "Write a STEP-BY-STEP guide to complete the main task on the page.",
+            "output_schema": {
+                "mode": "step_by_step",
+                "goal": "string",
+                "steps": [
+                    {
+                        "step": 1,
+                        "title": "string",
+                        "what_to_do": "string",
+                        "where_to_click": "string",
+                        "url": "string or null",
+                        "tips": ["string"],
+                    }
+                ],
+                "finish_check": ["string"],
+            },
+            "context": common_context,
+        }
     else:
-        user_prompt = (
-            "Analyze and summarize the content.\n\n"
-            f"CONTENT:\n{json.dumps(context)}\n\n"
-            "Return a detailed summary with key points."
-        )
+        raise ValueError(f"Unknown mode: {mode}")
 
-    summary, resolved_model = _openai_chat(
-        [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]
-    )
-
-    return AnalyzeResponse(
-        ok=True,
-        url=str(req.url),
-        title=meta.title,
-        description=meta.description,
-        blocks_count=len(blocks),
-        summary=summary,
-        question=req.question,
-        model=resolved_model,
-    )
+    return [
+        {"role": "system", "content": base_system},
+        {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
+    ]
 
 
-def _extract_key_facts(blocks) -> List[str]:
-    facts: List[str] = []
-    for block in blocks[:60]:
-        if isinstance(block, dict):
-            block_type = block.get("type", "")
-            text = block.get("text", "") or ""
-        else:
-            block_type = getattr(block, "type", "")
-            text = getattr(block, "text", "") or ""
-
-        if block_type in ["paragraph", "quote", "heading"] and text:
-            clean = text.strip()
-            if 30 <= len(clean) <= 400:
-                facts.append(clean)
-                if len(facts) >= 5:
-                    break
-    return facts[:5]
-
-
-def _extract_sections(blocks) -> List[str]:
-    sections: List[str] = []
-    for block in blocks:
-        if isinstance(block, dict):
-            block_type = block.get("type", "")
-            text = block.get("text", "") or ""
-            level = block.get("level", 0) or 0
-        else:
-            block_type = getattr(block, "type", "")
-            text = getattr(block, "text", "") or ""
-            level = getattr(block, "level", 0) or 0
-
-        if block_type == "heading" and level in (1, 2) and text:
-            sections.append(text)
-    return sections[:6]
-
-
-def _estimate_read_time(text: str) -> int:
-    words = len(text.split())
-    return max(1, round(words / 200))
-
-
-def _assess_readability(blocks) -> str:
-    total_blocks = len(blocks)
-    complex_count = 0
-    for block in blocks:
-        t = block.get("type") if isinstance(block, dict) else getattr(block, "type", "")
-        if t == "table":
-            complex_count += 2
-    ratio = complex_count / max(1, total_blocks)
-    if ratio > 0.3:
-        return "complex"
-    if ratio > 0.15:
-        return "moderate"
-    return "easy"
-
-
-@app.post("/accessible", response_model=AccessibleResponse)
-def accessible(req: AnalyzeRequest):
-    """Accessibility-optimized endpoint (kept)."""
-    meta, blocks, links, images, blocks_data, links_data, images_data = _scrape(str(req.url))
-
-    main_sections = _extract_sections(blocks)
-    key_facts = _extract_key_facts(blocks)
-    readability_level = _assess_readability(blocks)
-
+def generate_mode_output(*, mode: str, title: str | None, source_text: str, links: List[Dict[str, str]]) -> Tuple[Dict[str, Any], str]:
+    msgs = prompt_for_mode(mode, title=title, source_text=source_text, links=links)
+    raw, model_used = call_openai_chat(messages=msgs, temperature=0.2)
     try:
-        save_scrape(
-            url=str(req.url),
-            meta=meta,
-            blocks=blocks_data,
-            links=links_data,
-            images=images_data,
-            collection="pages",
-        )
+        out = parse_json_loose(raw)
     except Exception:
-        pass
+        out = {"mode": mode, "raw": raw}
+    return out, model_used
 
-    context = {
-        "url": str(req.url),
-        "metadata": {
-            "title": meta.title,
-            "description": meta.description,
-            "language": meta.lang,
-        },
-        "key_sections": main_sections,
-        "content_blocks": blocks_data[:50],
-    }
 
-    system_prompt_simple = (
-        "You are an accessibility expert and content simplifier. "
-        "Use simple words, short sentences, and clear lists. "
-        "Write at 8th-grade reading level or lower."
-    )
+# ----------------- Routes -----------------
 
-    system_prompt_detailed = (
-        "You are an expert content analyst and summarizer. "
-        "Provide a comprehensive summary with key points."
-    )
-
-    simple_prompt = (
-        "Simplify this content into easy-to-understand language.\n\n"
-        f"CONTENT:\n{json.dumps(context)}\n\n"
-        "Return a clear, simple summary with bullets."
-    )
-
-    detailed_prompt = (
-        "Summarize this content comprehensively.\n\n"
-        f"CONTENT:\n{json.dumps(context)}\n\n"
-        "Return a detailed summary with key points."
-    )
-
-    summary_simple, resolved_model = _openai_chat(
-        [
-            {"role": "system", "content": system_prompt_simple},
-            {"role": "user", "content": simple_prompt},
-        ]
-    )
-
-    summary_detailed, _ = _openai_chat(
-        [
-            {"role": "system", "content": system_prompt_detailed},
-            {"role": "user", "content": detailed_prompt},
-        ]
-    )
-
-    read_time = _estimate_read_time(summary_simple)
-
-    has_tables = any(
-        (b.get("type") == "table") if isinstance(b, dict) else (getattr(b, "type", "") == "table")
-        for b in blocks
-    )
-
-    return AccessibleResponse(
+@app.post("/scrap", response_model=ScrapResponse)
+def scrap(req: ScrapRequest):
+    bundle = scrape_url(str(req.url))
+    return ScrapResponse(
         ok=True,
-        url=str(req.url),
-        title=meta.title,
-        main_sections=main_sections,
-        key_facts=key_facts,
-        readability_level=readability_level,
-        summary_simple=summary_simple,
-        summary_detailed=summary_detailed,
-        estimated_read_time_minutes=read_time,
-        has_images=len(images) > 0,
-        has_tables=has_tables,
-        model=resolved_model,
+        url=bundle["url"],
+        meta=bundle["meta"],
+        blocks=bundle["blocks"],
+        links=bundle["links"],
+        images=bundle["images"],
     )
 
-
-# ---------------- New endpoints for the extension ----------------
 
 @app.post("/simplify", response_model=SimplifyResponse)
 def simplify(req: SimplifyRequest):
-    """
-    Adaptive simplification endpoint for your browser extension overlay.
+    page = scrape_url(str(req.url), session_id=req.session_id)
+    title = (page["meta"] or {}).get("title")
+    source_hash = page["source_text_hash"]
 
-    Returns structured JSON (sections/checklist/steps/glossary) so the UI can render different modes.
-    """
-    t0 = time.time()
-    meta, blocks, links, images, blocks_data, links_data, images_data = _scrape(str(req.url))
+    important_links = pick_important_links(page["links"])
 
-    # Save the scrape and get page_id for future chat/metrics
-    page_id = ""
-    try:
-        page_id = save_scrape(
-            url=str(req.url),
-            meta=meta,
-            blocks=blocks_data,
-            links=links_data,
-            images=images_data,
-            collection="pages",
+    wanted_modes = ["easy_read", "checklist", "step_by_step"]
+    if req.mode != "all":
+        wanted_modes = [req.mode]
+
+    outputs: Dict[str, Any] = {}
+    simpl_ids: Dict[str, str] = {}
+    model_used_any = get_openai_model()
+
+    for mode in wanted_modes:
+        if not req.force_regen:
+            cached = get_simplification(url=page["url"], mode=mode, source_text_hash=source_hash)
+            if cached and cached.get("output"):
+                outputs[mode] = cached["output"]
+                simpl_ids[mode] = cached.get("_id", "")
+                model_used_any = (cached.get("llm") or {}).get("model", model_used_any)
+                continue
+
+        out, model_used = generate_mode_output(
+            mode=mode,
+            title=title,
+            source_text=page["source_text"],
+            links=important_links,
+        )
+        model_used_any = model_used
+
+        sid = save_simplification(
+            url=page["url"],
+            page_id=page["page_id"],
+            source_text_hash=source_hash,
+            mode=mode,
+            output=out,
+            model=model_used,
             session_id=req.session_id,
         )
-    except Exception:
-        page_id = sha256_hex(str(req.url))
+        outputs[mode] = out
+        simpl_ids[mode] = sid
 
-    source_text = _blocks_to_plain_text(blocks_data, max_chars=12_000)
-    source_text_hash = sha256_hex(source_text)
-
-    compact_context = {
-        "url": str(req.url),
-        "title": meta.title,
-        "description": meta.description,
-        "language": meta.lang,
-        "content": source_text,
-    }
-
-    system_prompt = (
-        "You are an accessibility expert. "
-        "You rewrite complex web pages to reduce cognitive load. "
-        "Return ONLY valid JSON. No markdown, no extra text."
-    )
-
-    user_prompt = f"""Create an ADAPTIVE simplified representation of the page.
-The output MUST be a single JSON object with this schema:
-
-{{
-  "title": string|null,
-  "tldr": string,
-  "sections": [
-    {{
-      "id": string,
-      "heading": string,
-      "easy_read": [string, ...],
-      "key_points": [string, ...]
-    }}
-  ],
-  "checklist": [string, ...],
-  "steps": [{{"step": number, "text": string}}, ...],
-  "glossary": [{{"term": string, "definition": string}}, ...],
-  "warnings": [string, ...]
-}}
-
-Rules:
-- Use simple words (8th grade or lower), short sentences.
-- Prefer bullets/checklists.
-- Steps must be actionable and in order.
-- If something is missing, put it in warnings.
-
-PAGE:
-{json.dumps(compact_context)}
-"""
-
-    raw_json_text, resolved_model = _openai_chat(
-        [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        timeout=40.0,
-    )
-
-    try:
-        out = _parse_json_best_effort(raw_json_text)
-    except Exception:
-        out = {
-            "title": meta.title,
-            "tldr": raw_json_text.strip()[:800],
-            "sections": [
-                {
-                    "id": "summary",
-                    "heading": "Summary",
-                    "easy_read": [raw_json_text.strip()],
-                    "key_points": [],
-                }
-            ],
-            "checklist": [],
-            "steps": [],
-            "glossary": [],
-            "warnings": ["Model output was not valid JSON; used fallback."],
-        }
-
-    title = out.get("title") or meta.title
-    tldr = out.get("tldr") or ""
-
-    sections_in = out.get("sections") or []
-    sections: List[SimplifiedSection] = []
-    for idx, s in enumerate(sections_in):
-        if not isinstance(s, dict):
-            continue
-        sid = str(s.get("id") or f"sec_{idx}")
-        heading = str(s.get("heading") or "Section")
-        easy_read = [str(x) for x in (s.get("easy_read") or []) if x]
-        key_points = [str(x) for x in (s.get("key_points") or []) if x]
-        sections.append(SimplifiedSection(id=sid, heading=heading, easy_read=easy_read, key_points=key_points))
-
-    checklist = [str(x) for x in (out.get("checklist") or []) if x]
-
-    steps_in = out.get("steps") or []
-    steps: List[WizardStep] = []
-    for i, st in enumerate(steps_in):
-        if isinstance(st, dict):
-            step_num = int(st.get("step") or (i + 1))
-            text = str(st.get("text") or "").strip()
-        else:
-            step_num = i + 1
-            text = str(st).strip()
-        if text:
-            steps.append(WizardStep(step=step_num, text=text))
-
-    glossary_in = out.get("glossary") or []
-    glossary: List[GlossaryItem] = []
-    for g in glossary_in:
-        if isinstance(g, dict) and g.get("term") and g.get("definition"):
-            glossary.append(GlossaryItem(term=str(g["term"]), definition=str(g["definition"])))
-
-    warnings = [str(x) for x in (out.get("warnings") or []) if x]
-
-    # Save simplification (best-effort)
-    simplification_id: Optional[str] = None
-    try:
-        simplified_text_for_storage = "\n".join(
-            [tldr] + [p for sec in sections for p in sec.easy_read[:2]]
-        ).strip()[:4000]
-
-        simplification_id = save_simplification(
-            page_id=page_id,
-            url=str(req.url),
-            source_text_hash=source_text_hash,
-            simplified_text=simplified_text_for_storage,
-            mode=req.mode,
-            target_reading_level="easy",
-            model=resolved_model,
-            session_id=req.session_id,
-            extra_output={
-                "tldr": tldr,
-                "sections": [s.model_dump() for s in sections],
-                "checklist": checklist,
-                "steps": [s.model_dump() for s in steps],
-                "glossary": [g.model_dump() for g in glossary],
-                "warnings": warnings,
-                "timing_ms": int((time.time() - t0) * 1000),
-            },
-        )
-    except Exception:
-        pass
+    for m in ["easy_read", "checklist", "step_by_step"]:
+        outputs.setdefault(m, None)
+        simpl_ids.setdefault(m, "")
 
     return SimplifyResponse(
         ok=True,
-        url=str(req.url),
-        page_id=page_id,
-        simplification_id=simplification_id,
-        mode=req.mode,
-        title=title,
-        tldr=tldr,
-        sections=sections,
-        checklist=checklist,
-        steps=steps,
-        glossary=glossary,
-        warnings=warnings,
-        model=resolved_model,
+        url=page["url"],
+        page_id=page["page_id"],
+        source_text_hash=source_hash,
+        model=model_used_any,
+        outputs=outputs,
+        simplification_ids=simpl_ids,
     )
+
+
+# ----------------- (4) Section-level contextual chat -----------------
+
+def _extract_best_context(
+    *,
+    source_text: str,
+    simpl_output: Any,
+    mode: str,
+    section_id: str | None,
+    section_text: str | None,
+) -> Dict[str, Any]:
+    """
+    Build the smallest, most relevant context possible.
+    Priority:
+    1) section_text (best)
+    2) section_id (try to find within simpl_output if possible)
+    3) fallback: simplified output + trimmed source_text
+    """
+    ctx: Dict[str, Any] = {"mode": mode}
+
+    if section_text and section_text.strip():
+        ctx["focus"] = "section_text"
+        ctx["section_text"] = section_text.strip()[:4000]
+        if section_id:
+            ctx["section_id"] = section_id
+        return ctx
+
+    # Try to locate section by section_id in easy_read.sections
+    if section_id and isinstance(simpl_output, dict):
+        sections = simpl_output.get("sections")
+        if isinstance(sections, list):
+            for s in sections:
+                if not isinstance(s, dict):
+                    continue
+                # Accept matching by heading or id-like fields if you later add them
+                heading = str(s.get("heading") or "")
+                if heading and heading.strip().lower() == section_id.strip().lower():
+                    bullets = s.get("bullets") or []
+                    ctx["focus"] = "section_id"
+                    ctx["section_id"] = section_id
+                    ctx["section_heading"] = heading
+                    ctx["section_bullets"] = bullets[:12] if isinstance(bullets, list) else bullets
+                    return ctx
+
+    # Fallback: keep it compact
+    ctx["focus"] = "page_fallback"
+    ctx["simplified"] = simpl_output
+    ctx["source_text"] = source_text[:8000]
+    return ctx
 
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
-    """Contextual Q&A for the extension chatbot."""
-
-    page_doc = None
-    if req.page_id:
-        try:
-            page_doc = get_document("pages", req.page_id)
-        except Exception:
-            page_doc = None
-
-    blocks_data: List[Dict[str, Any]] = []
-    meta_title: Optional[str] = None
-    meta_desc: Optional[str] = None
-    lang: Optional[str] = None
-
-    if page_doc:
-        meta = page_doc.get("meta") or {}
-        meta_title = meta.get("title")
-        meta_desc = meta.get("description")
-        lang = meta.get("lang")
-        blocks_data = page_doc.get("blocks") or []
+    """
+    Contextual bot that can explain:
+    - the whole page (fallback)
+    - OR a specific section (best): pass section_text from the UI card
+    """
+    # Resolve page
+    if req.url:
+        page_id = page_id_for_url(str(req.url))
+        url_str = str(req.url)
+    elif req.page_id:
+        page_id = req.page_id
+        url_str = ""
     else:
-        meta, _blocks, _links, _images, blocks_data, _ld, _id = _scrape(str(req.url))
-        meta_title, meta_desc, lang = meta.title, meta.description, meta.lang
+        raise HTTPException(status_code=400, detail="Provide url or page_id.")
 
-    source_text = _blocks_to_plain_text(blocks_data, max_chars=8_000)
+    page = get_page(page_id=page_id)
+    if not page:
+        if not req.url:
+            raise HTTPException(status_code=404, detail="Page not found. Provide url to scrape.")
+        page_bundle = scrape_url(str(req.url), session_id=req.session_id)
+        page = get_page(page_id=page_bundle["page_id"]) or page_bundle
+
+    source_text = page.get("source_text", "")
+    title = (page.get("meta") or {}).get("title")
+    source_hash = page.get("source_text_hash", "")
+    page_url = page.get("url") or url_str
+
+    # Resolve simplification output (prefer simplification_id, else cache)
+    simpl_output = None
+    simpl_id = req.simplification_id
+
+    if simpl_id:
+        snap = db.collection("simplifications").document(simpl_id).get()
+        if getattr(snap, "exists", False):
+            simpl_output = (snap.to_dict() or {}).get("output")
+    else:
+        cached = get_simplification(url=page_url, mode=req.mode, source_text_hash=source_hash)
+        if cached:
+            simpl_output = cached.get("output")
+            simpl_id = cached.get("_id")
+
+    # If missing, generate quickly
+    if simpl_output is None and page_url:
+        important_links = pick_important_links(page.get("links", []))
+        out, model_used = generate_mode_output(
+            mode=req.mode,
+            title=title,
+            source_text=source_text,
+            links=important_links,
+        )
+        simpl_id = save_simplification(
+            url=page_url,
+            page_id=page_id,
+            source_text_hash=source_hash,
+            mode=req.mode,
+            output=out,
+            model=model_used,
+            session_id=req.session_id,
+        )
+        simpl_output = out
+
+    # Build best context
+    best_ctx = _extract_best_context(
+        source_text=source_text,
+        simpl_output=simpl_output,
+        mode=req.mode,
+        section_id=req.section_id,
+        section_text=req.section_text,
+    )
+
+    system = (
+        "You are a helpful accessibility assistant embedded in a browser extension. "
+        "Answer using only the provided context. "
+        "Use very simple language. Short sentences. "
+        "If asked for steps, respond as numbered steps. "
+        "If asked for a checklist, respond as bullet points. "
+        "If not sure, say so and suggest what to look for on the page."
+    )
 
     context = {
-        "url": str(req.url),
-        "title": meta_title,
-        "description": meta_desc,
-        "language": lang,
-        "mode": req.mode,
-        "section_id": req.section_id,
-        "content": source_text,
+        "title": title,
+        "url": page_url,
+        "context": best_ctx,
     }
 
-    system_prompt = (
-        "You are an accessibility assistant helping a user understand a web page. "
-        "Use simple words, short sentences, and be direct. "
-        "If the user asks for steps or a checklist, format as numbered steps or bullet points."
+    messages: List[Dict[str, str]] = [{"role": "system", "content": system}]
+    for m in req.history[-6:]:
+        messages.append({"role": m.role, "content": m.content})
+
+    messages.append({"role": "user", "content": json.dumps({"question": req.message, "context": context}, ensure_ascii=False)})
+
+    answer, model_used = call_openai_chat(messages=messages, temperature=0.2)
+
+    return ChatResponse(
+        ok=True,
+        model=model_used,
+        answer=answer,
+        page_id=page_id,
+        simplification_id=simpl_id,
     )
 
-    user_prompt = (
-        f"CONTEXT:\n{json.dumps(context)}\n\n"
-        f"USER QUESTION: {req.question}\n\n"
-        "Answer in a helpful, easy-to-read way."
-    )
 
-    answer, resolved_model = _openai_chat(
-        [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        timeout=35.0,
-    )
-
-    try:
-        save_metrics(
-            url=str(req.url),
-            page_id=req.page_id,
-            simplification_id=req.simplification_id,
-            session_id=req.session_id,
-            event="asked_question",
-            mode=req.mode,
-            questions=1,
-        )
-    except Exception:
-        pass
-
-    return ChatResponse(ok=True, answer=answer, model=resolved_model)
-
-
-@app.post("/metrics", response_model=MetricsResponse)
-def metrics(req: MetricsRequest):
-    """Store lightweight UX metrics for before/after judging."""
-    try:
-        mid = save_metrics(
-            url=str(req.url),
-            page_id=req.page_id,
-            simplification_id=req.simplification_id,
-            session_id=req.session_id,
-            event=req.event,
-            mode=req.mode,
-            clicks=req.clicks,
-            scrollPx=req.scrollPx,
-            questions=req.questions,
-            durationMs=req.durationMs,
-        )
-        return MetricsResponse(ok=True, id=mid)
-    except Exception:
-        return MetricsResponse(ok=True, id=None)
-
-
-# ---------------- Tests ----------------
+# ----------------- Tests -----------------
 
 @app.get("/firestore-test")
 def firestore_test():
-    """Quick test route to verify Firestore connectivity."""
-    ref = db.collection("audits").document()
+    ref = db.collection("audits").document("test-doc")
     ref.set({"hello": "world"})
-    return {"ok": True, "id": ref.id}
+    return {"ok": True, "id": "test-doc"}
 
 
 @app.get("/openai-test")
 def openai_test():
-    """Quick test route to verify OpenAI API connectivity."""
-    text_out, resolved_model = _openai_chat([{"role": "user", "content": "ping"}], timeout=20.0)
-    return {"ok": True, "model": resolved_model, "text": text_out}
+    payload = {"model": get_openai_model(), "messages": [{"role": "user", "content": "ping"}]}
+    headers = {"Authorization": f"Bearer {get_openai_key()}", "Content-Type": "application/json"}
+    resp = httpx.post(OPENAI_URL, json=payload, headers=headers, timeout=20.0)
+    resp.raise_for_status()
+    data = resp.json()
+    text_out = data["choices"][0]["message"]["content"] if data.get("choices") else ""
+    return {"ok": True, "model": data.get("model", get_openai_model()), "text": text_out}
