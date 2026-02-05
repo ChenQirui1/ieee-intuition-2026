@@ -1,4 +1,4 @@
-"""Main FastAPI application for scraper + 3-mode simplifier + contextual chat."""
+"""Main FastAPI application for scraper + 3-mode simplifier + contextual chat (language-aware)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import re
 from typing import Any, Dict, List, Tuple
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from models import (
@@ -41,14 +41,7 @@ from firebase_store import (
 
 app = FastAPI(title="Scraper + Accessibility Simplifier API")
 
-# ----------------- (1) CORS: extension-friendly + Authorization header -----------------
-#
-# Chrome extensions send Origin like: chrome-extension://<extension_id>
-# For hackathon, allow extension + local dev sites.
-#
-# Important: If allow_credentials=True, you cannot use allow_origins=["*"] safely.
-# We don't need cookies for this hackathon, so allow_credentials=False is ideal.
-#
+# Extension-friendly CORS (Authorization header allowed)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -60,13 +53,16 @@ app.add_middleware(
     allow_origin_regex=r"^chrome-extension://.*$",
     allow_credentials=False,
     allow_methods=["*"],
-    allow_headers=["*"],  # includes Authorization
+    allow_headers=["*"],
 )
 
 
 # ----------------- OpenAI (OLD endpoint) helpers -----------------
 
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
+
+# Keep your old default family; allow override via env
+DEFAULT_MODEL = "gpt-3.5-turbo-0125"
 
 
 def get_openai_key() -> str:
@@ -77,28 +73,22 @@ def get_openai_key() -> str:
 
 
 def get_openai_model() -> str:
-    return os.getenv("OPENAI_MODEL", "gpt-3.5-turbo-0125")
+    return os.getenv("OPENAI_MODEL", DEFAULT_MODEL)
 
 
 def call_openai_chat(*, messages: List[Dict[str, str]], temperature: float = 0.2) -> Tuple[str, str]:
     api_key = get_openai_key()
     model = get_openai_model()
 
-    payload = {
-        "model": model,
-        "messages": messages,
-        "temperature": temperature,
-    }
+    payload = {"model": model, "messages": messages, "temperature": temperature}
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
     try:
         resp = httpx.post(OPENAI_URL, json=payload, headers=headers, timeout=45.0)
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
-        # Do not leak headers; response body is OK (it won't contain your key)
         raise HTTPException(status_code=exc.response.status_code, detail=exc.response.text) from exc
     except Exception:
-        # Never echo raw exception (can accidentally include header values)
         raise HTTPException(status_code=502, detail="OpenAI request failed")
 
     data = resp.json()
@@ -118,6 +108,24 @@ def parse_json_loose(text: str) -> Dict[str, Any]:
     if not m:
         raise ValueError("Model did not return JSON.")
     return json.loads(m.group(0))
+
+
+# ----------------- Language helpers -----------------
+
+LANG_NAME = {
+    "en": "English",
+    "zh": "Simplified Chinese (简体中文)",
+    "ms": "Malay (Bahasa Melayu)",
+    "ta": "Tamil (தமிழ்)",
+}
+
+
+def language_instruction(lang_code: str) -> str:
+    lang = LANG_NAME.get(lang_code, "English")
+    return (
+        f"All human-readable TEXT VALUES must be in {lang}. "
+        "Do NOT translate JSON keys. Keep the JSON structure exactly as requested."
+    )
 
 
 # ----------------- Scrape helpers -----------------
@@ -235,13 +243,21 @@ def pick_important_links(links: List[Dict[str, Any]], max_links: int = 20) -> Li
     return cleaned
 
 
-def prompt_for_mode(mode: str, *, title: str | None, source_text: str, links: List[Dict[str, str]]) -> List[Dict[str, str]]:
+def prompt_for_mode(
+    mode: str,
+    *,
+    title: str | None,
+    source_text: str,
+    links: List[Dict[str, str]],
+    language: str,
+) -> List[Dict[str, str]]:
     base_system = (
         "You are an accessibility assistant. "
         "Rewrite complex webpages into formats that reduce cognitive load. "
         "Return ONLY valid JSON. No markdown. No extra text. "
         "Use plain language (around 8th grade). Short sentences. "
-        "Prefer bullets and steps. If jargon appears, define it in a glossary."
+        "Prefer bullets and steps. If jargon appears, define it in a glossary. "
+        + language_instruction(language)
     )
 
     common_context = {"title": title, "source_text": source_text, "links": links}
@@ -304,8 +320,15 @@ def prompt_for_mode(mode: str, *, title: str | None, source_text: str, links: Li
     ]
 
 
-def generate_mode_output(*, mode: str, title: str | None, source_text: str, links: List[Dict[str, str]]) -> Tuple[Dict[str, Any], str]:
-    msgs = prompt_for_mode(mode, title=title, source_text=source_text, links=links)
+def generate_mode_output(
+    *,
+    mode: str,
+    title: str | None,
+    source_text: str,
+    links: List[Dict[str, str]],
+    language: str,
+) -> Tuple[Dict[str, Any], str]:
+    msgs = prompt_for_mode(mode, title=title, source_text=source_text, links=links, language=language)
     raw, model_used = call_openai_chat(messages=msgs, temperature=0.2)
     try:
         out = parse_json_loose(raw)
@@ -334,6 +357,7 @@ def simplify(req: SimplifyRequest):
     page = scrape_url(str(req.url), session_id=req.session_id)
     title = (page["meta"] or {}).get("title")
     source_hash = page["source_text_hash"]
+    lang = req.language
 
     important_links = pick_important_links(page["links"])
 
@@ -347,7 +371,12 @@ def simplify(req: SimplifyRequest):
 
     for mode in wanted_modes:
         if not req.force_regen:
-            cached = get_simplification(url=page["url"], mode=mode, source_text_hash=source_hash)
+            cached = get_simplification(
+                url=page["url"],
+                mode=mode,
+                language=lang,
+                source_text_hash=source_hash,
+            )
             if cached and cached.get("output"):
                 outputs[mode] = cached["output"]
                 simpl_ids[mode] = cached.get("_id", "")
@@ -359,6 +388,7 @@ def simplify(req: SimplifyRequest):
             title=title,
             source_text=page["source_text"],
             links=important_links,
+            language=lang,
         )
         model_used_any = model_used
 
@@ -367,6 +397,7 @@ def simplify(req: SimplifyRequest):
             page_id=page["page_id"],
             source_text_hash=source_hash,
             mode=mode,
+            language=lang,
             output=out,
             model=model_used,
             session_id=req.session_id,
@@ -374,6 +405,7 @@ def simplify(req: SimplifyRequest):
         outputs[mode] = out
         simpl_ids[mode] = sid
 
+    # Always include keys for UI stability
     for m in ["easy_read", "checklist", "step_by_step"]:
         outputs.setdefault(m, None)
         simpl_ids.setdefault(m, "")
@@ -383,30 +415,23 @@ def simplify(req: SimplifyRequest):
         url=page["url"],
         page_id=page["page_id"],
         source_text_hash=source_hash,
+        language=req.language,
         model=model_used_any,
         outputs=outputs,
         simplification_ids=simpl_ids,
     )
 
 
-# ----------------- (4) Section-level contextual chat -----------------
-
 def _extract_best_context(
     *,
     source_text: str,
     simpl_output: Any,
     mode: str,
+    language: str,
     section_id: str | None,
     section_text: str | None,
 ) -> Dict[str, Any]:
-    """
-    Build the smallest, most relevant context possible.
-    Priority:
-    1) section_text (best)
-    2) section_id (try to find within simpl_output if possible)
-    3) fallback: simplified output + trimmed source_text
-    """
-    ctx: Dict[str, Any] = {"mode": mode}
+    ctx: Dict[str, Any] = {"mode": mode, "language": language}
 
     if section_text and section_text.strip():
         ctx["focus"] = "section_text"
@@ -415,14 +440,12 @@ def _extract_best_context(
             ctx["section_id"] = section_id
         return ctx
 
-    # Try to locate section by section_id in easy_read.sections
     if section_id and isinstance(simpl_output, dict):
         sections = simpl_output.get("sections")
         if isinstance(sections, list):
             for s in sections:
                 if not isinstance(s, dict):
                     continue
-                # Accept matching by heading or id-like fields if you later add them
                 heading = str(s.get("heading") or "")
                 if heading and heading.strip().lower() == section_id.strip().lower():
                     bullets = s.get("bullets") or []
@@ -432,7 +455,6 @@ def _extract_best_context(
                     ctx["section_bullets"] = bullets[:12] if isinstance(bullets, list) else bullets
                     return ctx
 
-    # Fallback: keep it compact
     ctx["focus"] = "page_fallback"
     ctx["simplified"] = simpl_output
     ctx["source_text"] = source_text[:8000]
@@ -441,12 +463,6 @@ def _extract_best_context(
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
-    """
-    Contextual bot that can explain:
-    - the whole page (fallback)
-    - OR a specific section (best): pass section_text from the UI card
-    """
-    # Resolve page
     if req.url:
         page_id = page_id_for_url(str(req.url))
         url_str = str(req.url)
@@ -467,8 +483,9 @@ def chat(req: ChatRequest):
     title = (page.get("meta") or {}).get("title")
     source_hash = page.get("source_text_hash", "")
     page_url = page.get("url") or url_str
+    lang = req.language
 
-    # Resolve simplification output (prefer simplification_id, else cache)
+    # resolve simplification output (language-aware)
     simpl_output = None
     simpl_id = req.simplification_id
 
@@ -477,12 +494,11 @@ def chat(req: ChatRequest):
         if getattr(snap, "exists", False):
             simpl_output = (snap.to_dict() or {}).get("output")
     else:
-        cached = get_simplification(url=page_url, mode=req.mode, source_text_hash=source_hash)
+        cached = get_simplification(url=page_url, mode=req.mode, language=lang, source_text_hash=source_hash)
         if cached:
             simpl_output = cached.get("output")
             simpl_id = cached.get("_id")
 
-    # If missing, generate quickly
     if simpl_output is None and page_url:
         important_links = pick_important_links(page.get("links", []))
         out, model_used = generate_mode_output(
@@ -490,23 +506,25 @@ def chat(req: ChatRequest):
             title=title,
             source_text=source_text,
             links=important_links,
+            language=lang,
         )
         simpl_id = save_simplification(
             url=page_url,
             page_id=page_id,
             source_text_hash=source_hash,
             mode=req.mode,
+            language=lang,
             output=out,
             model=model_used,
             session_id=req.session_id,
         )
         simpl_output = out
 
-    # Build best context
     best_ctx = _extract_best_context(
         source_text=source_text,
         simpl_output=simpl_output,
         mode=req.mode,
+        language=lang,
         section_id=req.section_id,
         section_text=req.section_text,
     )
@@ -515,16 +533,13 @@ def chat(req: ChatRequest):
         "You are a helpful accessibility assistant embedded in a browser extension. "
         "Answer using only the provided context. "
         "Use very simple language. Short sentences. "
-        "If asked for steps, respond as numbered steps. "
+        + language_instruction(lang) +
+        " If asked for steps, respond as numbered steps. "
         "If asked for a checklist, respond as bullet points. "
         "If not sure, say so and suggest what to look for on the page."
     )
 
-    context = {
-        "title": title,
-        "url": page_url,
-        "context": best_ctx,
-    }
+    context = {"title": title, "url": page_url, "context": best_ctx}
 
     messages: List[Dict[str, str]] = [{"role": "system", "content": system}]
     for m in req.history[-6:]:
@@ -542,8 +557,6 @@ def chat(req: ChatRequest):
         simplification_id=simpl_id,
     )
 
-
-# ----------------- Tests -----------------
 
 @app.get("/firestore-test")
 def firestore_test():

@@ -10,7 +10,6 @@ from pydantic import AnyUrl, BaseModel, Field
 # ----------------- Scraper models -----------------
 
 class PageMeta(BaseModel):
-    """Metadata extracted from a page."""
     title: Optional[str] = None
     description: Optional[str] = None
     canonical: Optional[str] = None
@@ -18,20 +17,17 @@ class PageMeta(BaseModel):
 
 
 class LinkItem(BaseModel):
-    """A link found on the page."""
     href: str
     text: str
     is_internal: bool
 
 
 class ImageItem(BaseModel):
-    """An image found on the page."""
     src: str
     alt: str = ""
 
 
 class ContentBlock(BaseModel):
-    """A block of content (heading, paragraph, list, table, etc.)."""
     type: str  # heading|paragraph|list|table|quote|code|hr
     level: Optional[int] = None
     depth: Optional[int] = None
@@ -54,14 +50,16 @@ class ScrapResponse(BaseModel):
     images: List[ImageItem]
 
 
-# ----------------- Simplify (3 modes) -----------------
+# ----------------- Simplify (3 modes + language) -----------------
 
 Mode = Literal["easy_read", "checklist", "step_by_step", "all"]
+Language = Literal["en", "zh", "ms", "ta"]  # English, Chinese, Malay, Tamil
 
 
 class SimplifyRequest(BaseModel):
     url: AnyUrl
     mode: Mode = "all"
+    language: Language = "en"
     session_id: Optional[str] = None
     force_regen: bool = False
 
@@ -71,12 +69,13 @@ class SimplifyResponse(BaseModel):
     url: str
     page_id: str
     source_text_hash: str
+    language: Language
     model: str
-    outputs: Dict[str, Any]  # keys: easy_read, checklist, step_by_step
-    simplification_ids: Dict[str, str]  # mode -> simplification doc id
+    outputs: Dict[str, Any]                # keys: easy_read, checklist, step_by_step
+    simplification_ids: Dict[str, str]     # mode -> simplification doc id
 
 
-# ----------------- Contextual chatbot -----------------
+# ----------------- Contextual chatbot (+ section-level + language) -----------------
 
 class ChatMessage(BaseModel):
     role: Literal["user", "assistant", "system"]
@@ -84,22 +83,15 @@ class ChatMessage(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    """
-    Contextual chat request.
-
-    For true section-level context:
-    - pass `section_text` from the overlay card the user clicked
-      (best UX + shortest prompt + most accurate).
-    """
     url: Optional[AnyUrl] = None
     page_id: Optional[str] = None
 
     mode: Literal["easy_read", "checklist", "step_by_step"] = "easy_read"
+    language: Language = "en"
     simplification_id: Optional[str] = None
 
-    # NEW (Section-level context)
     section_id: Optional[str] = Field(None, description="Optional section identifier in your UI")
-    section_text: Optional[str] = Field(None, description="The exact text the user is asking about")
+    section_text: Optional[str] = Field(None, description="Exact text user is asking about")
 
     message: str = Field(..., min_length=1)
     history: List[ChatMessage] = []

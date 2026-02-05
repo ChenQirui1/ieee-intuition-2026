@@ -1,4 +1,4 @@
-"""Firebase initialization + Firestore operations for pages + simplifications."""
+"""Firebase initialization + Firestore operations for pages + simplifications (language-aware)."""
 
 from __future__ import annotations
 
@@ -117,8 +117,8 @@ def page_id_for_url(url: str) -> str:
     return sha256_hex(url)
 
 
-def simplification_id_for(*, url: str, mode: str, source_text_hash: str) -> str:
-    return sha256_hex(f"{url}|{mode}|{source_text_hash}")
+def simplification_id_for(*, url: str, mode: str, language: str, source_text_hash: str) -> str:
+    return sha256_hex(f"{url}|{mode}|{language}|{source_text_hash}")
 
 
 # ---------------- Pages ----------------
@@ -130,13 +130,8 @@ def get_or_create_page(
     collection: str = "pages",
 ) -> Tuple[str, Optional[Dict[str, Any]]]:
     """
-    Convenience helper:
-
-    - Always returns a deterministic page_id for this url.
-    - If the page doc exists, returns (page_id, doc).
-    - If not, creates a placeholder doc and returns (page_id, placeholder_doc).
-
-    This is useful for the frontend/extension flow where you want a stable page_id early.
+    Returns deterministic page_id for url.
+    If doc missing, creates a placeholder doc and returns it.
     """
     page_id = page_id_for_url(url)
     ref = db.collection(collection).document(page_id)
@@ -168,9 +163,6 @@ def save_page(
     session_id: Optional[str] = None,
     collection: str = "pages",
 ) -> str:
-    """
-    Upsert page by deterministic page_id = sha256(url).
-    """
     page_id = page_id_for_url(url)
 
     doc: Dict[str, Any] = {
@@ -191,30 +183,23 @@ def save_page(
 
 
 def get_page(*, page_id: str, collection: str = "pages") -> Optional[Dict[str, Any]]:
-    """
-    Fetch a page doc by id.
-    Works for both real and mock Firestore.
-    """
     snap = db.collection(collection).document(page_id).get()
     if not getattr(snap, "exists", False):
         return None
     return snap.to_dict()
 
 
-# ---------------- Simplifications (cached per mode+hash) ----------------
+# ---------------- Simplifications (cached per mode+language+hash) ----------------
 
 def get_simplification(
     *,
     url: str,
     mode: str,
+    language: str,
     source_text_hash: str,
     collection: str = "simplifications",
 ) -> Optional[Dict[str, Any]]:
-    """
-    Fetch a cached simplification by deterministic key (url|mode|source_hash).
-    Returns dict with an extra field: _id (the doc id).
-    """
-    sid = simplification_id_for(url=url, mode=mode, source_text_hash=source_text_hash)
+    sid = simplification_id_for(url=url, mode=mode, language=language, source_text_hash=source_text_hash)
     snap = db.collection(collection).document(sid).get()
     if not getattr(snap, "exists", False):
         return None
@@ -229,21 +214,20 @@ def save_simplification(
     page_id: str,
     source_text_hash: str,
     mode: str,
+    language: str,
     output: Dict[str, Any],
     model: str,
     session_id: Optional[str] = None,
     collection: str = "simplifications",
 ) -> str:
-    """
-    Upsert simplification by deterministic id = sha256(url|mode|source_hash).
-    """
-    sid = simplification_id_for(url=url, mode=mode, source_text_hash=source_text_hash)
+    sid = simplification_id_for(url=url, mode=mode, language=language, source_text_hash=source_text_hash)
 
     doc: Dict[str, Any] = {
         "url": url,
         "page_id": page_id,
         "source_text_hash": source_text_hash,
         "mode": mode,
+        "language": language,
         "session_id": session_id,
         "llm": {"provider": "openai", "model": model},
         "output": output,
