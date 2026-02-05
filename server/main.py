@@ -1,11 +1,11 @@
-"""Main FastAPI application for scraper + 3-mode simplifier + contextual chat (language-aware)."""
+"""Main FastAPI application for scraper + 3-mode simplifier + contextual chat (language-aware, validated)."""
 
 from __future__ import annotations
 
 import json
 import os
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -60,8 +60,6 @@ app.add_middleware(
 # ----------------- OpenAI (OLD endpoint) helpers -----------------
 
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
-
-# Keep your old default family; allow override via env
 DEFAULT_MODEL = "gpt-3.5-turbo-0125"
 
 
@@ -84,7 +82,7 @@ def call_openai_chat(*, messages: List[Dict[str, str]], temperature: float = 0.2
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
     try:
-        resp = httpx.post(OPENAI_URL, json=payload, headers=headers, timeout=45.0)
+        resp = httpx.post(OPENAI_URL, json=payload, headers=headers, timeout=60.0)
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
         raise HTTPException(status_code=exc.response.status_code, detail=exc.response.text) from exc
@@ -99,11 +97,15 @@ def call_openai_chat(*, messages: List[Dict[str, str]], temperature: float = 0.2
 
 
 def parse_json_loose(text: str) -> Dict[str, Any]:
+    """
+    Tries hard to parse JSON even if the model includes extra text.
+    """
     text = text.strip()
     try:
         return json.loads(text)
     except Exception:
         pass
+
     m = re.search(r"\{.*\}", text, re.DOTALL)
     if not m:
         raise ValueError("Model did not return JSON.")
@@ -119,13 +121,188 @@ LANG_NAME = {
     "ta": "Tamil (தமிழ்)",
 }
 
+MALAY_HINT_WORDS = {
+    "ini", "untuk", "dan", "yang", "anda", "boleh", "langkah", "dokumen", "permohonan",
+    "sila", "perlu", "semak", "senarai", "panduan", "tujuan", "maklumat", "lebih", "lanjut"
+}
+
+COMMON_EN_WORDS = {
+    "the", "this", "that", "page", "domain", "used", "use", "for", "only", "not", "and",
+    "about", "learn", "more", "example", "documentation", "operations"
+}
 
 def language_instruction(lang_code: str) -> str:
     lang = LANG_NAME.get(lang_code, "English")
-    return (
+    # IMPORTANT: we enforce value-language only; keys stay English JSON keys.
+    base = (
         f"All human-readable TEXT VALUES must be in {lang}. "
-        "Do NOT translate JSON keys. Keep the JSON structure exactly as requested."
+        "DO NOT translate JSON keys. Keep JSON keys exactly as provided. "
+        "URLs may remain unchanged. Proper nouns may remain unchanged. "
     )
+    if lang_code == "ms":
+        base += (
+            "Avoid English sentences. Use Malay sentence structure. "
+            "If you accidentally produce English, rewrite fully into Malay."
+        )
+    if lang_code == "zh":
+        base += "Use Simplified Chinese characters. If you produce English, rewrite into Chinese."
+    if lang_code == "ta":
+        base += "Use Tamil script characters. If you produce English, rewrite into Tamil."
+    return base
+
+
+def flatten_text(obj: Any) -> str:
+    """
+    Pull all string values from a nested object into one string (for language heuristics).
+    """
+    parts: List[str] = []
+
+    def walk(x: Any):
+        if x is None:
+            return
+        if isinstance(x, str):
+            parts.append(x)
+            return
+        if isinstance(x, (int, float, bool)):
+            return
+        if isinstance(x, list):
+            for it in x:
+                walk(it)
+            return
+        if isinstance(x, dict):
+            for v in x.values():
+                walk(v)
+
+    walk(obj)
+    return " ".join(parts)
+
+
+def language_ok(lang: str, obj: Any) -> bool:
+    """
+    Lightweight heuristics to ensure output is plausibly in the target language.
+    """
+    if lang == "en":
+        return True
+
+    txt = flatten_text(obj)
+
+    if lang == "zh":
+        # Any CJK character
+        return bool(re.search(r"[\u4e00-\u9fff]", txt))
+
+    if lang == "ta":
+        # Tamil Unicode block
+        return bool(re.search(r"[\u0B80-\u0BFF]", txt))
+
+    if lang == "ms":
+        low = re.sub(r"[^a-zA-Z\s]", " ", txt).lower()
+        words = [w for w in low.split() if w]
+        if not words:
+            return False
+        malay_hits = sum(1 for w in words if w in MALAY_HINT_WORDS)
+        en_hits = sum(1 for w in words if w in COMMON_EN_WORDS)
+
+        # Require at least some Malay markers OR very low English markers
+        return malay_hits >= 2 or (en_hits <= 3 and len(words) >= 8)
+
+    return True
+
+
+# ----------------- Schema validation + normalization -----------------
+
+def ensure_dict(x: Any) -> Dict[str, Any]:
+    return x if isinstance(x, dict) else {}
+
+def validate_easy_read(obj: Dict[str, Any]) -> Tuple[bool, str]:
+    req = ["mode", "about", "key_points", "sections", "important_links", "warnings", "glossary"]
+    for k in req:
+        if k not in obj:
+            return False, f"easy_read missing key: {k}"
+    if obj.get("mode") != "easy_read":
+        return False, "easy_read.mode must be 'easy_read'"
+    if not isinstance(obj.get("key_points"), list):
+        return False, "easy_read.key_points must be a list"
+    if not isinstance(obj.get("sections"), list):
+        return False, "easy_read.sections must be a list"
+    return True, "ok"
+
+def normalize_checklist(obj: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Some models return { 'checklist': { ... } }.
+    We unwrap and enforce keys.
+    """
+    if "checklist" in obj and isinstance(obj["checklist"], dict):
+        obj = obj["checklist"]
+
+    # Ensure mode field exists
+    obj = dict(obj)
+    obj.setdefault("mode", "checklist")
+
+    # Ensure expected arrays exist
+    obj.setdefault("goal", "")
+    obj.setdefault("requirements", [])
+    obj.setdefault("documents", [])
+    obj.setdefault("fees", [])
+    obj.setdefault("deadlines", [])
+    obj.setdefault("actions", [])
+    obj.setdefault("common_mistakes", [])
+    return obj
+
+def validate_checklist(obj: Dict[str, Any]) -> Tuple[bool, str]:
+    req = ["mode", "goal", "requirements", "documents", "fees", "deadlines", "actions", "common_mistakes"]
+    for k in req:
+        if k not in obj:
+            return False, f"checklist missing key: {k}"
+    if obj.get("mode") != "checklist":
+        return False, "checklist.mode must be 'checklist'"
+    if not isinstance(obj.get("requirements"), list):
+        return False, "checklist.requirements must be a list"
+    return True, "ok"
+
+def validate_step_by_step(obj: Dict[str, Any]) -> Tuple[bool, str]:
+    req = ["mode", "goal", "steps", "finish_check"]
+    for k in req:
+        if k not in obj:
+            return False, f"step_by_step missing key: {k}"
+    if obj.get("mode") != "step_by_step":
+        return False, "step_by_step.mode must be 'step_by_step'"
+    if not isinstance(obj.get("steps"), list):
+        return False, "step_by_step.steps must be a list"
+    # Validate at least one step item structure (if steps exist)
+    if obj["steps"]:
+        s0 = obj["steps"][0]
+        if not isinstance(s0, dict):
+            return False, "step_by_step.steps items must be objects"
+        for k in ["step", "title", "what_to_do", "where_to_click"]:
+            if k not in s0:
+                return False, f"step_by_step.steps[0] missing {k}"
+    return True, "ok"
+
+
+def validate_by_mode(mode: str, obj: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+    """
+    Returns (ok, reason, normalized_obj)
+    """
+    obj = ensure_dict(obj)
+
+    if mode == "easy_read":
+        obj = dict(obj)
+        obj.setdefault("mode", "easy_read")
+        ok, reason = validate_easy_read(obj)
+        return ok, reason, obj
+
+    if mode == "checklist":
+        obj = normalize_checklist(obj)
+        ok, reason = validate_checklist(obj)
+        return ok, reason, obj
+
+    if mode == "step_by_step":
+        obj = dict(obj)
+        obj.setdefault("mode", "step_by_step")
+        ok, reason = validate_step_by_step(obj)
+        return ok, reason, obj
+
+    return False, f"Unknown mode {mode}", obj
 
 
 # ----------------- Scrape helpers -----------------
@@ -225,7 +402,7 @@ def scrape_url(url: str, session_id: str | None = None) -> Dict[str, Any]:
     }
 
 
-# ----------------- Mode prompts -----------------
+# ----------------- Mode prompts (STRONGER) -----------------
 
 def pick_important_links(links: List[Dict[str, Any]], max_links: int = 20) -> List[Dict[str, str]]:
     cleaned = []
@@ -246,95 +423,156 @@ def pick_important_links(links: List[Dict[str, Any]], max_links: int = 20) -> Li
 def prompt_for_mode(
     mode: str,
     *,
-    title: str | None,
+    title: Optional[str],
     source_text: str,
     links: List[Dict[str, str]],
     language: str,
 ) -> List[Dict[str, str]]:
-    base_system = (
+    """
+    IMPORTANT:
+    - We do NOT want the model to output 'task', 'output_schema', or 'context'.
+    - We want ONLY the JSON object that is an INSTANCE of the schema.
+    """
+    system = (
         "You are an accessibility assistant. "
         "Rewrite complex webpages into formats that reduce cognitive load. "
         "Return ONLY valid JSON. No markdown. No extra text. "
-        "Use plain language (around 8th grade). Short sentences. "
-        "Prefer bullets and steps. If jargon appears, define it in a glossary. "
+        "DO NOT include the schema, the task description, or the context in the output. "
+        "Output must be a JSON object that MATCHES the schema instance. "
+        "Use short sentences and plain language. Prefer bullets and steps. "
+        "If jargon appears, define it in a glossary. "
         + language_instruction(language)
     )
 
-    common_context = {"title": title, "source_text": source_text, "links": links}
+    # Shared context chunk:
+    ctx = {
+        "title": title or "",
+        "source_text": source_text,
+        "links": links,
+    }
 
     if mode == "easy_read":
-        user = {
-            "task": "Create an EASY-READ version of the page.",
-            "output_schema": {
-                "mode": "easy_read",
-                "about": "one short sentence",
-                "key_points": ["3-7 bullets"],
-                "sections": [{"heading": "string", "bullets": ["bullets"]}],
-                "important_links": [{"label": "string", "url": "string"}],
-                "warnings": ["string"],
-                "glossary": [{"term": "string", "simple": "string"}],
-            },
-            "context": common_context,
+        schema = {
+            "mode": "easy_read",
+            "about": "string",
+            "key_points": ["string"],
+            "sections": [{"heading": "string", "bullets": ["string"]}],
+            "important_links": [{"label": "string", "url": "string"}],
+            "warnings": ["string"],
+            "glossary": [{"term": "string", "simple": "string"}],
         }
+
     elif mode == "checklist":
-        user = {
-            "task": "Extract a CHECKLIST that helps a user complete the page's main task.",
-            "output_schema": {
-                "mode": "checklist",
-                "goal": "string",
-                "requirements": [{"item": "string", "details": "string", "required": True}],
-                "documents": [{"item": "string", "details": "string"}],
-                "fees": [{"item": "string", "amount": "string"}],
-                "deadlines": [{"item": "string", "date": "string"}],
-                "actions": [{"item": "string", "url": "string"}],
-                "common_mistakes": ["string"],
-            },
-            "context": common_context,
+        schema = {
+            "mode": "checklist",
+            "goal": "string",
+            "requirements": [{"item": "string", "details": "string", "required": True}],
+            "documents": [{"item": "string", "details": "string"}],
+            "fees": [{"item": "string", "amount": "string"}],
+            "deadlines": [{"item": "string", "date": "string"}],
+            "actions": [{"item": "string", "url": "string"}],
+            "common_mistakes": ["string"],
         }
+
     elif mode == "step_by_step":
-        user = {
-            "task": "Write a STEP-BY-STEP guide to complete the main task on the page.",
-            "output_schema": {
-                "mode": "step_by_step",
-                "goal": "string",
-                "steps": [
-                    {
-                        "step": 1,
-                        "title": "string",
-                        "what_to_do": "string",
-                        "where_to_click": "string",
-                        "url": "string or null",
-                        "tips": ["string"],
-                    }
-                ],
-                "finish_check": ["string"],
-            },
-            "context": common_context,
+        schema = {
+            "mode": "step_by_step",
+            "goal": "string",
+            "steps": [
+                {
+                    "step": 1,
+                    "title": "string",
+                    "what_to_do": "string",
+                    "where_to_click": "string",
+                    "url": None,
+                    "tips": ["string"],
+                }
+            ],
+            "finish_check": ["string"],
         }
     else:
         raise ValueError(f"Unknown mode: {mode}")
 
+    user = (
+        "CONTEXT (use this to write the output):\n"
+        f"{json.dumps(ctx, ensure_ascii=False)}\n\n"
+        "OUTPUT SCHEMA (produce an instance of this; do not output the schema itself):\n"
+        f"{json.dumps(schema, ensure_ascii=False)}\n\n"
+        "REMINDER:\n"
+        "- Return ONLY the final JSON object.\n"
+        "- Do NOT include any extra keys like task/output_schema/context.\n"
+        "- Keep bullets/steps short.\n"
+    )
+
     return [
-        {"role": "system", "content": base_system},
-        {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
     ]
 
 
-def generate_mode_output(
+def generate_mode_output_validated(
     *,
     mode: str,
-    title: str | None,
+    title: Optional[str],
     source_text: str,
     links: List[Dict[str, str]],
     language: str,
+    max_retries: int = 1,
 ) -> Tuple[Dict[str, Any], str]:
-    msgs = prompt_for_mode(mode, title=title, source_text=source_text, links=links, language=language)
-    raw, model_used = call_openai_chat(messages=msgs, temperature=0.2)
-    try:
-        out = parse_json_loose(raw)
-    except Exception:
-        out = {"mode": mode, "raw": raw}
-    return out, model_used
+    """
+    Generate JSON, parse, validate schema, validate language; retry once if bad.
+    """
+    messages = prompt_for_mode(mode, title=title, source_text=source_text, links=links, language=language)
+
+    last_raw = ""
+    last_reason = ""
+
+    for attempt in range(max_retries + 1):
+        raw, model_used = call_openai_chat(messages=messages, temperature=0.2)
+        last_raw = raw
+
+        # Parse
+        try:
+            obj = parse_json_loose(raw)
+        except Exception as e:
+            last_reason = f"Invalid JSON: {e}"
+            obj = {}
+
+        # Normalize + validate schema
+        ok_schema, reason_schema, obj_norm = validate_by_mode(mode, ensure_dict(obj))
+
+        # Validate language
+        ok_lang = language_ok(language, obj_norm)
+        if not ok_lang:
+            # if language fails, we treat as invalid
+            reason_lang = f"Wrong language for '{language}'"
+        else:
+            reason_lang = "ok"
+
+        if ok_schema and ok_lang:
+            return obj_norm, model_used
+
+        last_reason = f"{reason_schema}; {reason_lang}"
+
+        # Retry: add a corrective instruction including the previous output
+        if attempt < max_retries:
+            messages = messages + [
+                {"role": "assistant", "content": raw},
+                {
+                    "role": "user",
+                    "content": (
+                        "Your previous output was INVALID.\n"
+                        f"Problems: {last_reason}\n\n"
+                        "Fix it now and return ONLY the corrected JSON object.\n"
+                        "Do NOT include the schema, task, or context.\n"
+                        + language_instruction(language)
+                    ),
+                },
+            ]
+
+    # If still bad after retries, return a safe minimal fallback object
+    fallback = {"mode": mode, "raw": last_raw, "error": last_reason}
+    return fallback, get_openai_model()
 
 
 # ----------------- Routes -----------------
@@ -383,12 +621,13 @@ def simplify(req: SimplifyRequest):
                 model_used_any = (cached.get("llm") or {}).get("model", model_used_any)
                 continue
 
-        out, model_used = generate_mode_output(
+        out, model_used = generate_mode_output_validated(
             mode=mode,
             title=title,
             source_text=page["source_text"],
             links=important_links,
             language=lang,
+            max_retries=1,  # retry once to keep it fast but reliable
         )
         model_used_any = model_used
 
@@ -428,8 +667,8 @@ def _extract_best_context(
     simpl_output: Any,
     mode: str,
     language: str,
-    section_id: str | None,
-    section_text: str | None,
+    section_id: Optional[str],
+    section_text: Optional[str],
 ) -> Dict[str, Any]:
     ctx: Dict[str, Any] = {"mode": mode, "language": language}
 
@@ -499,14 +738,16 @@ def chat(req: ChatRequest):
             simpl_output = cached.get("output")
             simpl_id = cached.get("_id")
 
+    # generate on the fly if missing
     if simpl_output is None and page_url:
         important_links = pick_important_links(page.get("links", []))
-        out, model_used = generate_mode_output(
+        out, model_used = generate_mode_output_validated(
             mode=req.mode,
             title=title,
             source_text=source_text,
             links=important_links,
             language=lang,
+            max_retries=1,
         )
         simpl_id = save_simplification(
             url=page_url,
