@@ -5,11 +5,6 @@ from typing import List, Optional
 from pydantic import AnyUrl, BaseModel, Field
 
 
-class ScrapRequest(BaseModel):
-    """Request model for scraping a URL."""
-    url: AnyUrl = Field(..., description="http(s) URL to scrape")
-
-
 class PageMeta(BaseModel):
     """Metadata extracted from a page."""
     title: Optional[str] = None
@@ -42,11 +37,35 @@ class ContentBlock(BaseModel):
     rows: Optional[List[List[str]]] = None  # for table
 
 
-class ScrapResponse(BaseModel):
-    """Response model for scraping a URL."""
+class AnalyzeRequest(BaseModel):
+    """Request model for analyzing a URL (combines scrap + ask in one call)."""
+    url: AnyUrl = Field(..., description="URL to scrape and analyze")
+    question: Optional[str] = Field(None, description="Optional: Specific question about the content")
+
+
+class AnalyzeResponse(BaseModel):
+    """Response model for URL analysis (scrap + ask combined)."""
     ok: bool = True
     url: str
-    meta: PageMeta
-    blocks: List[ContentBlock]
-    links: List[LinkItem] = []
-    images: List[ImageItem] = []
+    title: Optional[str] = None
+    description: Optional[str] = None
+    blocks_count: int
+    summary: str
+    question: Optional[str] = None
+    model: str
+
+
+class AccessibleResponse(BaseModel):
+    """Response for accessibility-optimized content analysis."""
+    ok: bool = True
+    url: str
+    title: Optional[str] = None
+    main_sections: List[str]  # Top-level headings
+    key_facts: List[str]  # Extracted key points
+    readability_level: str  # easy, moderate, complex
+    summary_simple: str  # Simplified 8th-grade reading level
+    summary_detailed: str  # Full summary
+    estimated_read_time_minutes: int
+    has_images: bool
+    has_tables: bool
+    model: str

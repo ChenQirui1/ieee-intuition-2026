@@ -11,18 +11,61 @@ from firebase_admin import credentials
 from firebase_admin import firestore as fb_firestore
 
 
+class MockFirestore:
+    """Mock Firestore client for local testing without Firebase credentials."""
+    def __init__(self):
+        self.data = {}
+    
+    def collection(self, name):
+        return MockCollection(name, self.data)
+    
+    def transaction(self):
+        return None
+
+
+class MockCollection:
+    """Mock Firestore collection."""
+    def __init__(self, name, data):
+        self.name = name
+        self.data = data
+        if name not in self.data:
+            self.data[name] = {}
+    
+    def document(self, doc_id=None):
+        if doc_id is None:
+            import uuid
+            doc_id = str(uuid.uuid4())
+        return MockDocument(self.name, doc_id, self.data)
+
+
+class MockDocument:
+    """Mock Firestore document."""
+    def __init__(self, collection_name, doc_id, data):
+        self.collection_name = collection_name
+        self.id = doc_id
+        self.data = data
+    
+    def set(self, data):
+        if self.collection_name not in self.data:
+            self.data[self.collection_name] = {}
+        self.data[self.collection_name][self.id] = data
+        print(f"[MOCK] Saved to {self.collection_name}/{self.id}: {data}")
+
+
 def get_firestore() -> fb_firestore.Client:
     """
     Initializes Firebase Admin (once) and returns a Firestore client.
     Requires GOOGLE_APPLICATION_CREDENTIALS to point to your service-account JSON.
+    Set USE_MOCK_FIREBASE=true to use mock Firestore for local testing.
     """
+    if os.getenv("USE_MOCK_FIREBASE", "false").lower() == "true":
+        return MockFirestore()
+    
     if not firebase_admin._apps:
         cred_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
         if not cred_path:
-            raise RuntimeError(
-                "GOOGLE_APPLICATION_CREDENTIALS is not set. "
-                "Set it to the full path of your Firebase service account JSON."
-            )
+            print("WARNING: GOOGLE_APPLICATION_CREDENTIALS not set. Using mock Firestore.")
+            return MockFirestore()
         firebase_admin.initialize_app(credentials.Certificate(cred_path))
     return fb_firestore.client()
 
