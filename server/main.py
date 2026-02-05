@@ -205,7 +205,7 @@ def scrap(req: ScrapRequest):
     # OPTIONAL: save to Firestore (remove if you don't want auto-saving)
     try:
         db.collection("audits").add(
-            {
+            { 
                 "url": str(req.url),
                 "title": title,
                 "description": description,
