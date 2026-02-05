@@ -1,11 +1,13 @@
-
 from __future__ import annotations
 
+import os
 import re
 import socket
 import ipaddress
 from typing import Optional, List
 
+import firebase_admin
+from firebase_admin import credentials, firestore
 import requests
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException
@@ -14,6 +16,25 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 app = FastAPI(title="Scraper API")
+
+# ---------- Firestore init ----------
+
+def get_firestore():
+    """
+    Initializes Firebase Admin (once) and returns a Firestore client.
+    Requires GOOGLE_APPLICATION_CREDENTIALS to point to your service-account JSON.
+    """
+    if not firebase_admin._apps:
+        cred_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        if not cred_path:
+            raise RuntimeError(
+                "GOOGLE_APPLICATION_CREDENTIALS is not set. "
+                "Set it to the full path of your Firebase service account JSON."
+            )
+        firebase_admin.initialize_app(credentials.Certificate(cred_path))
+    return firestore.client()
+
+db = get_firestore()
 
 # ---------- Models ----------
 
@@ -181,6 +202,22 @@ def scrap(req: ScrapRequest):
     headings = extract_headings(soup)
     text = extract_text(soup)
 
+    # OPTIONAL: save to Firestore (remove if you don't want auto-saving)
+    try:
+        db.collection("audits").add(
+            {
+                "url": str(req.url),
+                "title": title,
+                "description": description,
+                "headings": headings.model_dump(),
+                "text": text,
+                "ok": True,
+            }
+        )
+    except Exception:
+        # Don't break scraping if Firestore write fails (hackathon-friendly)
+        pass
+
     return ScrapResponse(
         ok=True,
         url=str(req.url),
@@ -189,3 +226,12 @@ def scrap(req: ScrapRequest):
         headings=headings,
         text=text,
     )
+
+
+# ---------- Quick test route ----------
+
+@app.get("/firestore-test")
+def firestore_test():
+    ref = db.collection("audits").document()
+    ref.set({"hello": "world"})
+    return {"ok": True, "id": ref.id}
