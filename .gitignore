@@ -3,4 +3,6 @@ server/secrets/
 server/secrets/*.json
 .env
 
+
+.venv
 __pycache__

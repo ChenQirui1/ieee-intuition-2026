@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
@@ -70,21 +71,37 @@ def get_firestore():
     """
     Initializes Firebase Admin (once) and returns a Firestore client.
 
-    - Requires GOOGLE_APPLICATION_CREDENTIALS pointing to service account JSON.
-    - For local-only dev without Firebase, set USE_MOCK_FIREBASE=true.
+    Supports three methods (in order of priority):
+    1. USE_MOCK_FIREBASE=true -> Use mock Firestore (local dev)
+    2. FIREBASE_SERVICE_ACCOUNT -> JSON string with credentials (production)
+    3. GOOGLE_APPLICATION_CREDENTIALS -> Path to JSON file (local dev)
     """
     if os.getenv("USE_MOCK_FIREBASE", "false").lower() == "true":
         return MockFirestore()
 
     if not firebase_admin._apps:
-        cred_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-        if not cred_path:
-            raise RuntimeError(
-                "GOOGLE_APPLICATION_CREDENTIALS is not set. "
-                "Set it to the full path of your Firebase service account JSON "
-                "or set USE_MOCK_FIREBASE=true."
-            )
-        firebase_admin.initialize_app(credentials.Certificate(cred_path))
+        # Method 1: JSON string from environment variable (production)
+        service_account_json = os.getenv("FIREBASE_SERVICE_ACCOUNT")
+        if service_account_json:
+            try:
+                service_account_dict = json.loads(service_account_json)
+                cred = credentials.Certificate(service_account_dict)
+                firebase_admin.initialize_app(cred)
+                print("[Firebase] Initialized from FIREBASE_SERVICE_ACCOUNT environment variable")
+            except json.JSONDecodeError as e:
+                raise RuntimeError(f"FIREBASE_SERVICE_ACCOUNT is not valid JSON: {e}")
+        else:
+            # Method 2: File path from environment variable (local dev)
+            cred_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+            if not cred_path:
+                raise RuntimeError(
+                    "Firebase credentials not found. Set one of:\n"
+                    "  - FIREBASE_SERVICE_ACCOUNT (JSON string, for production)\n"
+                    "  - GOOGLE_APPLICATION_CREDENTIALS (file path, for local dev)\n"
+                    "  - USE_MOCK_FIREBASE=true (for local dev without Firebase)"
+                )
+            firebase_admin.initialize_app(credentials.Certificate(cred_path))
+            print(f"[Firebase] Initialized from file: {cred_path}")
 
     return fb_firestore.client()
 

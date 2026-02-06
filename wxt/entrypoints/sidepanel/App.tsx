@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
+import { browser } from 'wxt/browser';
+import { storage } from '@wxt-dev/storage';
 
 interface Message {
   id: string;
@@ -11,23 +13,48 @@ interface PageSummary {
   bullets: string[];
 }
 
+interface Heading {
+  text: string;
+  level: number;
+  index: number;
+}
+
+interface UserPreferences {
+  fontSize: 'standard' | 'large' | 'extra-large';
+  linkStyle: 'default' | 'underline' | 'highlight' | 'border';
+  contrastMode: 'standard' | 'high-contrast-yellow';
+  hideAds: boolean;
+  simplifyLanguage: boolean;
+  showBreadcrumbs: boolean;
+  profileName: string;
+}
+
 function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [summary, setSummary] = useState<PageSummary | null>(null);
+  const [headings, setHeadings] = useState<Heading[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [simplifyView, setSimplifyView] = useState(false);
   const [inputText, setInputText] = useState('');
-  const [activeTab, setActiveTab] = useState<'summary' | 'chat'>('summary');
+  const [activeTab, setActiveTab] = useState<'summary' | 'chat' | 'headings'>('summary');
   const [selectionMode, setSelectionMode] = useState(false);
+  const [zoomLevel, setZoomLevel] = useState(1);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     // Listen for messages from content script
     const handleMessage = (message: any) => {
+      console.log('[Sidepanel] Received message:', message);
       if (message.type === 'ELEMENT_CLICKED') {
+        // Switch to chat tab if openChat flag is set
+        if (message.openChat) {
+          setActiveTab('chat');
+        }
         handleElementClick(message.data);
       } else if (message.type === 'PAGE_LOADED') {
+        console.log('[Sidepanel] Page loaded data:', message.data);
+        console.log('[Sidepanel] Headings received:', message.data.headings);
         generatePageSummary(message.data);
+        setHeadings(message.data.headings || []);
       }
     };
 
@@ -36,10 +63,72 @@ function App() {
     // Request initial page summary
     requestPageSummary();
 
+    // Load user preferences for zoom
+    loadPreferences();
+
     return () => {
       browser.runtime.onMessage.removeListener(handleMessage);
     };
   }, []);
+
+  const loadPreferences = async () => {
+    try {
+      const preferences = await storage.getItem<UserPreferences>('sync:userPreferences');
+      if (preferences) {
+        applyZoom(preferences.fontSize);
+
+        // Watch for preference changes
+        storage.watch<UserPreferences>('sync:userPreferences', (newPreferences) => {
+          if (newPreferences) {
+            applyZoom(newPreferences.fontSize);
+          }
+        });
+      }
+    } catch (error) {
+      console.error('[Sidepanel] Failed to load preferences:', error);
+    }
+  };
+
+  const applyZoom = (fontSize: 'standard' | 'large' | 'extra-large') => {
+    if (fontSize === 'large') {
+      setZoomLevel(1.25);
+    } else if (fontSize === 'extra-large') {
+      setZoomLevel(1.5);
+    } else {
+      setZoomLevel(1);
+    }
+  };
+
+  const handleZoomChange = async (fontSize: 'standard' | 'large' | 'extra-large') => {
+    try {
+      // Load current preferences
+      const preferences = await storage.getItem<UserPreferences>('sync:userPreferences');
+      if (preferences) {
+        // Update fontSize and save
+        const updatedPreferences = { ...preferences, fontSize };
+        await storage.setItem('sync:userPreferences', updatedPreferences);
+        applyZoom(fontSize);
+      }
+    } catch (error) {
+      console.error('[Sidepanel] Failed to update zoom:', error);
+    }
+  };
+
+  const handleZoomIn = () => {
+    if (zoomLevel === 1) {
+      handleZoomChange('large');
+    } else if (zoomLevel === 1.25) {
+      handleZoomChange('extra-large');
+    }
+  };
+
+  const handleZoomOut = () => {
+    if (zoomLevel === 1.5) {
+      handleZoomChange('large');
+    } else if (zoomLevel === 1.25) {
+      handleZoomChange('standard');
+    }
+  };
 
   useEffect(() => {
     // Auto-scroll to bottom when new messages arrive
@@ -115,34 +204,6 @@ function App() {
     }
   };
 
-  const handleReadAloud = () => {
-    if (messages.length === 0) return;
-
-    const lastMessage = messages[messages.length - 1];
-    if (lastMessage.role === 'assistant') {
-      // Use Web Speech API
-      const utterance = new SpeechSynthesisUtterance(lastMessage.content);
-      utterance.rate = 0.9;
-      utterance.pitch = 1;
-      window.speechSynthesis.speak(utterance);
-    }
-  };
-
-  const toggleSimplifyView = async () => {
-    setSimplifyView(!simplifyView);
-    try {
-      const tabs = await browser.tabs.query({ active: true, currentWindow: true });
-      if (tabs[0]?.id) {
-        browser.tabs.sendMessage(tabs[0].id, {
-          type: 'TOGGLE_SIMPLIFY_VIEW',
-          enabled: !simplifyView,
-        });
-      }
-    } catch (error) {
-      console.error('[Sidepanel] Failed to toggle simplify view:', error);
-    }
-  };
-
   const toggleSelectionMode = async () => {
     setSelectionMode(!selectionMode);
     try {
@@ -201,6 +262,20 @@ function App() {
     }
   };
 
+  const handleHeadingClick = async (heading: Heading) => {
+    try {
+      const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+      if (tabs[0]?.id) {
+        browser.tabs.sendMessage(tabs[0].id, {
+          type: 'SCROLL_TO_HEADING',
+          index: heading.index,
+        });
+      }
+    } catch (error) {
+      console.error('[Sidepanel] Failed to scroll to heading:', error);
+    }
+  };
+
   return (
     <div className="flex flex-col h-screen bg-gray-50">
       {/* Header with Tabs */}
@@ -208,7 +283,7 @@ function App() {
         <div className="flex border-b border-blue-500">
           <button
             onClick={() => setActiveTab('summary')}
-            className={`flex-1 px-6 py-4 font-semibold transition-colors ${
+            className={`flex-1 px-4 py-4 font-semibold transition-colors text-sm ${
               activeTab === 'summary'
                 ? 'bg-white text-blue-600'
                 : 'text-white hover:bg-blue-500'
@@ -217,8 +292,18 @@ function App() {
             💡 Summary
           </button>
           <button
+            onClick={() => setActiveTab('headings')}
+            className={`flex-1 px-4 py-4 font-semibold transition-colors text-sm ${
+              activeTab === 'headings'
+                ? 'bg-white text-blue-600'
+                : 'text-white hover:bg-blue-500'
+            }`}
+          >
+            📑 Headings
+          </button>
+          <button
             onClick={() => setActiveTab('chat')}
-            className={`flex-1 px-6 py-4 font-semibold transition-colors ${
+            className={`flex-1 px-4 py-4 font-semibold transition-colors text-sm ${
               activeTab === 'chat'
                 ? 'bg-white text-blue-600'
                 : 'text-white hover:bg-blue-500'
@@ -262,43 +347,142 @@ function App() {
 
           {/* Controls for Summary Tab */}
           <div className="bg-white border-t border-gray-200 p-4 shadow-lg">
-            <div className="grid grid-cols-3 gap-3">
-              <button
-                onClick={toggleSelectionMode}
-                className={`flex flex-col items-center justify-center p-4 rounded-lg transition-colors ${
-                  selectionMode
-                    ? 'bg-yellow-100 hover:bg-yellow-200 ring-2 ring-yellow-400'
-                    : 'bg-yellow-50 hover:bg-yellow-100'
-                }`}
-              >
-                <span className="text-3xl mb-1">🎯</span>
-                <span className="text-xs font-medium text-gray-700">
-                  {selectionMode ? 'Selection ON' : 'Selection OFF'}
-                </span>
-              </button>
+            {/* Zoom Controls */}
+            <div className="mb-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-semibold text-gray-600">Zoom</span>
+                <button
+                  onClick={openSettings}
+                  className="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded transition-colors"
+                >
+                  ⚙️ Settings
+                </button>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleZoomOut}
+                  disabled={zoomLevel === 1}
+                  className="flex-1 px-4 py-3 rounded-lg text-xl font-bold bg-gray-100 hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                >
+                  −
+                </button>
+                <button
+                  onClick={handleZoomIn}
+                  disabled={zoomLevel === 1.5}
+                  className="flex-1 px-4 py-3 rounded-lg text-xl font-bold bg-gray-100 hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                >
+                  +
+                </button>
+              </div>
+            </div>
 
+            {/* Other Controls */}
+            <button
+              onClick={toggleSelectionMode}
+              className={`w-full flex items-center justify-center gap-2 p-3 rounded-lg transition-colors ${
+                selectionMode
+                  ? 'bg-yellow-100 hover:bg-yellow-200 ring-2 ring-yellow-400'
+                  : 'bg-yellow-50 hover:bg-yellow-100'
+              }`}
+            >
+              <span className="text-2xl">🎯</span>
+              <span className="text-sm font-medium text-gray-700">
+                {selectionMode ? 'Selection ON' : 'Selection OFF'}
+              </span>
+            </button>
+          </div>
+        </>
+      ) : activeTab === 'headings' ? (
+        /* Headings Tab */
+        <>
+          <div className="flex-1 overflow-y-auto p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
+                <span className="text-3xl">📑</span>
+                Table of Contents
+              </h2>
               <button
-                onClick={toggleSimplifyView}
-                className={`flex flex-col items-center justify-center p-4 rounded-lg transition-colors ${
-                  simplifyView
-                    ? 'bg-purple-100 hover:bg-purple-200'
-                    : 'bg-purple-50 hover:bg-purple-100'
-                }`}
+                onClick={requestPageSummary}
+                className="px-3 py-1 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
               >
-                <span className="text-3xl mb-1">📄</span>
-                <span className="text-xs font-medium text-gray-700">
-                  {simplifyView ? 'Normal View' : 'Simplify View'}
-                </span>
-              </button>
-
-              <button
-                onClick={openSettings}
-                className="flex flex-col items-center justify-center p-4 rounded-lg bg-gray-50 hover:bg-gray-100 transition-colors"
-              >
-                <span className="text-3xl mb-1">⚙️</span>
-                <span className="text-xs font-medium text-gray-700">Edit Profile</span>
+                🔄 Refresh
               </button>
             </div>
+            {headings.length === 0 ? (
+              <div className="text-gray-500">
+                <p className="mb-2">No headings found on this page.</p>
+                <p className="text-sm">Try clicking the Refresh button above.</p>
+              </div>
+            ) : (
+              <nav className="space-y-1">
+                {headings.map((heading, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => handleHeadingClick(heading)}
+                    className={`w-full text-left px-4 py-3 rounded-lg hover:bg-blue-50 transition-colors border border-transparent hover:border-blue-200 ${
+                      heading.level === 1 ? 'font-bold text-base' :
+                      heading.level === 2 ? 'font-semibold text-sm' :
+                      'text-sm'
+                    }`}
+                    style={{
+                      paddingLeft: `${heading.level * 0.75}rem`,
+                    }}
+                  >
+                    <span className="text-blue-600 mr-2">
+                      {heading.level === 1 ? '▶' : heading.level === 2 ? '▸' : '·'}
+                    </span>
+                    <span className="text-gray-800">{heading.text}</span>
+                  </button>
+                ))}
+              </nav>
+            )}
+          </div>
+
+          {/* Controls for Headings Tab */}
+          <div className="bg-white border-t border-gray-200 p-4 shadow-lg">
+            {/* Zoom Controls */}
+            <div className="mb-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-semibold text-gray-600">Zoom</span>
+                <button
+                  onClick={openSettings}
+                  className="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded transition-colors"
+                >
+                  ⚙️ Settings
+                </button>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleZoomOut}
+                  disabled={zoomLevel === 1}
+                  className="flex-1 px-4 py-3 rounded-lg text-xl font-bold bg-gray-100 hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                >
+                  −
+                </button>
+                <button
+                  onClick={handleZoomIn}
+                  disabled={zoomLevel === 1.5}
+                  className="flex-1 px-4 py-3 rounded-lg text-xl font-bold bg-gray-100 hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
+            {/* Other Controls */}
+            <button
+              onClick={toggleSelectionMode}
+              className={`w-full flex items-center justify-center gap-2 p-3 rounded-lg transition-colors ${
+                selectionMode
+                  ? 'bg-yellow-100 hover:bg-yellow-200 ring-2 ring-yellow-400'
+                  : 'bg-yellow-50 hover:bg-yellow-100'
+              }`}
+            >
+              <span className="text-2xl">🎯</span>
+              <span className="text-sm font-medium text-gray-700">
+                {selectionMode ? 'Selection ON' : 'Selection OFF'}
+              </span>
+            </button>
           </div>
         </>
       ) : (
@@ -390,13 +574,48 @@ function App() {
 
           {/* Controls for Chat Tab */}
           <div className="bg-white border-t border-gray-200 p-4 shadow-lg">
+            {/* Zoom Controls */}
+            <div className="mb-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-semibold text-gray-600">Zoom</span>
+                <button
+                  onClick={openSettings}
+                  className="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded transition-colors"
+                >
+                  ⚙️ Settings
+                </button>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleZoomOut}
+                  disabled={zoomLevel === 1}
+                  className="flex-1 px-4 py-3 rounded-lg text-xl font-bold bg-gray-100 hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                >
+                  −
+                </button>
+                <button
+                  onClick={handleZoomIn}
+                  disabled={zoomLevel === 1.5}
+                  className="flex-1 px-4 py-3 rounded-lg text-xl font-bold bg-gray-100 hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
+            {/* Selection Mode Button */}
             <button
-              onClick={handleReadAloud}
-              disabled={messages.length === 0}
-              className="w-full flex items-center justify-center gap-3 p-4 rounded-lg bg-green-50 hover:bg-green-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              onClick={toggleSelectionMode}
+              className={`w-full flex items-center justify-center gap-2 p-3 rounded-lg transition-colors ${
+                selectionMode
+                  ? 'bg-yellow-100 hover:bg-yellow-200 ring-2 ring-yellow-400'
+                  : 'bg-yellow-50 hover:bg-yellow-100'
+              }`}
             >
-              <span className="text-3xl">🔊</span>
-              <span className="text-sm font-medium text-gray-700">Read Last Message Aloud</span>
+              <span className="text-2xl">🎯</span>
+              <span className="text-sm font-medium text-gray-700">
+                {selectionMode ? 'Selection ON' : 'Selection OFF'}
+              </span>
             </button>
           </div>
         </>

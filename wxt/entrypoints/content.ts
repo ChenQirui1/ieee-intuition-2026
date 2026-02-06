@@ -1,69 +1,40 @@
-import type { UserProfile, FontSize, SpacingMode } from '@/types/userProfile';
+import tocbot from 'tocbot';
+import { browser } from 'wxt/browser';
+import { storage } from '@wxt-dev/storage';
+
+interface UserPreferences {
+  fontSize: 'standard' | 'large' | 'extra-large';
+  linkStyle: 'default' | 'underline' | 'highlight' | 'border';
+  contrastMode: 'standard' | 'high-contrast-yellow';
+  hideAds: boolean;
+  simplifyLanguage: boolean;
+  showBreadcrumbs: boolean;
+  profileName: string;
+}
 
 export default defineContentScript({
   matches: ['<all_urls>'],
   main() {
     console.log('[IEEE Extension] Content script loaded');
     initInterpreter();
+    initAccessibilityFeatures();
   },
 });
-
-// Mock user profile - will be replaced with actual storage later
-const mockUserProfile: UserProfile = {
-  theme: {
-    // Color preferences
-    primaryColor: '#3b82f6', // blue-500
-    backgroundColor: '#ffffff',
-    textColor: '#1f2937', // gray-800
-    highlightColor: '#fbbf24', // amber-400
-
-    // Accessibility settings
-    highContrast: true,
-    colorBlindMode: 'none', // 'none' | 'protanopia' | 'deuteranopia' | 'tritanopia'
-
-    // Typography
-    fontSize: 'large', // 'small' | 'medium' | 'large' | 'x-large'
-    fontFamily: 'system-ui, -apple-system, sans-serif',
-    lineHeight: 1.6,
-    letterSpacing: 'normal',
-
-    // Spacing
-    spacing: 'normal', // 'compact' | 'normal' | 'comfortable'
-  },
-  interactions: {
-    highlightOnHover: true,
-    showTooltips: true,
-  },
-};
 
 /**
  * Initialize the Interpreter
  */
-async function initInterpreter() {
+function initInterpreter() {
   try {
-    // Step 1: Load profile (using mock for now)
-    const userProfile = await loadUserProfile();
-    console.log('[IEEE Extension] User profile loaded:', userProfile);
-
-    // Step 2: Inject theme
-    injectTheme(userProfile.theme);
-    console.log('[IEEE Extension] Theme injected');
-
-    // Step 3: Initialize the Highlighter
-    if (userProfile.interactions.highlightOnHover) {
-      initHighlighter(userProfile);
-      console.log('[IEEE Extension] Highlighter initialized');
-    }
-
-    // Step 4: Initialize click handler for sidepanel
+    // Initialize click handler for sidepanel
     initClickHandler();
     console.log('[IEEE Extension] Click handler initialized');
 
-    // Step 5: Listen for messages from sidepanel
+    // Listen for messages from sidepanel
     initMessageListener();
     console.log('[IEEE Extension] Message listener initialized');
 
-    // Step 6: Notify sidepanel that page is loaded
+    // Notify sidepanel that page is loaded
     notifyPageLoaded();
   } catch (error) {
     console.error('[IEEE Extension] Failed to initialize:', error);
@@ -71,167 +42,40 @@ async function initInterpreter() {
 }
 
 /**
- * Load user profile from storage (mock implementation)
+ * Initialize click handler to send element data to sidepanel
  */
-async function loadUserProfile() {
-  // TODO: Replace with actual storage.sync.get() when settings page is ready
-  // const result = await browser.storage.sync.get('userProfile');
-  // return result.userProfile || mockUserProfile;
+function initClickHandler() {
+  let selectionMode = false;
+  let selectedElement: HTMLElement | null = null;
+  let hoveredElement: HTMLElement | null = null;
 
-  return mockUserProfile;
-}
+  // Listen for selection mode toggle from sidepanel
+  browser.runtime.onMessage.addListener((message) => {
+    if (message.type === 'TOGGLE_SELECTION_MODE') {
+      selectionMode = message.enabled;
 
-/**
- * Inject theme CSS variables into the page
- */
-function injectTheme(theme: UserProfile['theme']) {
-  // Create or get existing style element
-  let styleEl = document.getElementById('ieee-extension-theme') as HTMLStyleElement;
+      // Clear selection when turning off
+      if (!selectionMode) {
+        if (selectedElement) {
+          selectedElement = null;
+        }
+        if (hoveredElement) {
+          removeHoverHighlight(hoveredElement);
+          hoveredElement = null;
+        }
+      }
 
-  if (!styleEl) {
-    styleEl = document.createElement('style');
-    styleEl.id = 'ieee-extension-theme';
-    document.head.appendChild(styleEl);
-  }
-
-  // Font size mapping
-  const fontSizeMap = {
-    small: '14px',
-    medium: '16px',
-    large: '18px',
-    'x-large': '20px',
-  };
-
-  // Spacing mapping
-  const spacingMap = {
-    compact: '0.75',
-    normal: '1',
-    comfortable: '1.25',
-  };
-
-  // Build CSS with custom properties and actual style overrides
-  const css = `
-    :root {
-      --ieee-primary-color: ${theme.primaryColor};
-      --ieee-bg-color: ${theme.backgroundColor};
-      --ieee-text-color: ${theme.textColor};
-      --ieee-highlight-color: ${theme.highlightColor};
-      --ieee-font-size: ${fontSizeMap[theme.fontSize]};
-      --ieee-font-family: ${theme.fontFamily};
-      --ieee-line-height: ${theme.lineHeight};
-      --ieee-letter-spacing: ${theme.letterSpacing};
-      --ieee-spacing-multiplier: ${spacingMap[theme.spacing]};
+      console.log('[IEEE Extension] Selection mode', selectionMode ? 'enabled' : 'disabled');
     }
+  });
 
-    /* Apply font size adjustments */
-    body, p, div, span, li, td, th, a, button, input, textarea, select {
-      font-size: ${fontSizeMap[theme.fontSize]} !important;
-      line-height: ${theme.lineHeight} !important;
-      letter-spacing: ${theme.letterSpacing} !important;
-    }
-
-    /* Apply font family */
-    body, p, div, span, li, td, th, a, button, input, textarea, select {
-      font-family: ${theme.fontFamily} !important;
-    }
-
-    /* Apply spacing adjustments */
-    p, h1, h2, h3, h4, h5, h6, ul, ol, li {
-      margin-top: calc(1em * ${spacingMap[theme.spacing]}) !important;
-      margin-bottom: calc(1em * ${spacingMap[theme.spacing]}) !important;
-    }
-
-    /* Apply padding adjustments */
-    button, input, textarea, select {
-      padding: calc(0.5em * ${spacingMap[theme.spacing]}) calc(1em * ${spacingMap[theme.spacing]}) !important;
-    }
-
-    /* Highlight animation */
-    @keyframes ieee-highlight-pulse {
-      0% {
-        outline: 3px solid ${theme.highlightColor};
-        outline-offset: 2px;
-        background-color: ${theme.highlightColor}20;
-      }
-      50% {
-        outline: 3px solid ${theme.highlightColor};
-        outline-offset: 4px;
-        background-color: ${theme.highlightColor}30;
-      }
-      100% {
-        outline: 3px solid ${theme.highlightColor};
-        outline-offset: 2px;
-        background-color: ${theme.highlightColor}20;
-      }
-    }
-
-    .ieee-highlighted {
-      outline: 3px solid ${theme.highlightColor} !important;
-      outline-offset: 2px !important;
-      background-color: ${theme.highlightColor}20 !important;
-      border-radius: 4px !important;
-      animation: ieee-highlight-pulse 0.6s ease-out;
-    }
-
-    /* Selected element (persistent highlight) */
-    .ieee-selected {
-      outline: 3px solid ${theme.highlightColor} !important;
-      outline-offset: 2px !important;
-      background-color: ${theme.highlightColor}30 !important;
-      border-radius: 4px !important;
-    }
-
-    /* High contrast mode */
-    ${theme.highContrast ? `
-      body {
-        filter: contrast(1.5) brightness(1.1) !important;
-      }
-
-      /* Enhance text contrast */
-      p, h1, h2, h3, h4, h5, h6, span, a, li, td, th {
-        color: #000000 !important;
-        text-shadow: 0 0 1px rgba(0,0,0,0.3) !important;
-      }
-
-      /* Enhance borders */
-      button, input, textarea, select, a {
-        border: 2px solid #000000 !important;
-      }
-    ` : ''}
-
-    /* Color blind modes - using CSS filters */
-    ${theme.colorBlindMode === 'protanopia' ? `
-      html {
-        filter: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"><filter id="protanopia"><feColorMatrix type="matrix" values="0.567, 0.433, 0, 0, 0, 0.558, 0.442, 0, 0, 0, 0, 0.242, 0.758, 0, 0, 0, 0, 0, 1, 0"/></filter></svg>#protanopia');
-      }
-    ` : ''}
-    ${theme.colorBlindMode === 'deuteranopia' ? `
-      html {
-        filter: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"><filter id="deuteranopia"><feColorMatrix type="matrix" values="0.625, 0.375, 0, 0, 0, 0.7, 0.3, 0, 0, 0, 0, 0.3, 0.7, 0, 0, 0, 0, 0, 1, 0"/></filter></svg>#deuteranopia');
-      }
-    ` : ''}
-    ${theme.colorBlindMode === 'tritanopia' ? `
-      html {
-        filter: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"><filter id="tritanopia"><feColorMatrix type="matrix" values="0.95, 0.05, 0, 0, 0, 0, 0.433, 0.567, 0, 0, 0, 0.475, 0.525, 0, 0, 0, 0, 0, 1, 0"/></filter></svg>#tritanopia');
-      }
-    ` : ''}
-  `;
-
-  styleEl.textContent = css;
-}
-
-/**
- * Initialize the Highlighter - adds hover listener to highlight elements
- * Highlights persist until hovering over a different element
- */
-function initHighlighter(userProfile: UserProfile) {
-  let currentHighlighted: HTMLElement | null = null;
-
-  // Global mouseover listener (bubbles up from child elements)
+  // Add hover effect when selection mode is on
   document.addEventListener('mouseover', (event) => {
+    if (!selectionMode) return;
+
     const target = event.target as HTMLElement;
 
-    // Skip if hovering over the extension's own elements
+    // Skip if hovering extension's own elements
     if (target.closest('[data-ieee-extension]')) {
       return;
     }
@@ -241,43 +85,23 @@ function initHighlighter(userProfile: UserProfile) {
       return;
     }
 
-    // Skip if already highlighting this element
-    if (target === currentHighlighted) {
-      return;
+    // Remove previous hover highlight
+    if (hoveredElement && hoveredElement !== target) {
+      removeHoverHighlight(hoveredElement);
     }
 
-    // Remove previous highlight
-    if (currentHighlighted) {
-      currentHighlighted.classList.remove('ieee-highlighted');
-    }
+    // Add hover highlight
+    hoveredElement = target;
+    addHoverHighlight(target);
+  });
 
-    // Add highlight to hovered element (persists after mouse leaves)
-    target.classList.add('ieee-highlighted');
-    currentHighlighted = target;
-  }, true); // Use capture phase to catch events early
+  document.addEventListener('mouseout', (event) => {
+    if (!selectionMode) return;
 
-  console.log('[IEEE Extension] Persistent hover highlighter active');
-}
-
-/**
- * Initialize click handler to send element data to sidepanel
- */
-function initClickHandler() {
-  let selectionMode = false;
-  let selectedElement: HTMLElement | null = null;
-
-  // Listen for selection mode toggle from sidepanel
-  browser.runtime.onMessage.addListener((message) => {
-    if (message.type === 'TOGGLE_SELECTION_MODE') {
-      selectionMode = message.enabled;
-
-      // Clear selection when turning off
-      if (!selectionMode && selectedElement) {
-        selectedElement.classList.remove('ieee-selected');
-        selectedElement = null;
-      }
-
-      console.log('[IEEE Extension] Selection mode', selectionMode ? 'enabled' : 'disabled');
+    const target = event.target as HTMLElement;
+    if (hoveredElement === target) {
+      removeHoverHighlight(target);
+      hoveredElement = null;
     }
   });
 
@@ -294,18 +118,16 @@ function initClickHandler() {
       return;
     }
 
-    // If selection mode is ON, prevent default behavior and highlight
+    // If selection mode is ON, prevent default behavior
     if (selectionMode) {
       event.preventDefault();
       event.stopPropagation();
 
       // Remove previous selection
       if (selectedElement) {
-        selectedElement.classList.remove('ieee-selected');
+        selectedElement = null;
       }
 
-      // Add selection to clicked element
-      target.classList.add('ieee-selected');
       selectedElement = target;
 
       // Extract text content
@@ -316,13 +138,14 @@ function initClickHandler() {
         tag: target.tagName.toLowerCase(),
         text: text,
         id: target.id || undefined,
-        classes: Array.from(target.classList).filter(cls => cls !== 'ieee-selected'),
+        classes: Array.from(target.classList),
       };
 
-      // Send to sidepanel
+      // Send to sidepanel to open chat
       browser.runtime.sendMessage({
         type: 'ELEMENT_CLICKED',
         data: elementData,
+        openChat: true, // Flag to switch to chat tab
       }).catch(() => {
         // Sidepanel might not be open, that's okay
       });
@@ -351,6 +174,18 @@ function initClickHandler() {
       });
     }
   }, true);
+
+  function addHoverHighlight(element: HTMLElement) {
+    element.style.outline = '3px solid #FEF08A';
+    element.style.backgroundColor = 'rgba(254, 240, 138, 0.2)';
+    element.style.cursor = 'pointer';
+  }
+
+  function removeHoverHighlight(element: HTMLElement) {
+    element.style.outline = '';
+    element.style.backgroundColor = '';
+    element.style.cursor = '';
+  }
 }
 
 /**
@@ -360,8 +195,8 @@ function initMessageListener() {
   browser.runtime.onMessage.addListener((message) => {
     if (message.type === 'GET_PAGE_CONTENT') {
       handleGetPageContent();
-    } else if (message.type === 'TOGGLE_SIMPLIFY_VIEW') {
-      handleToggleSimplifyView(message.enabled);
+    } else if (message.type === 'SCROLL_TO_HEADING') {
+      handleScrollToHeading(message.index);
     }
   });
 }
@@ -372,10 +207,56 @@ function initMessageListener() {
 function handleGetPageContent() {
   // Extract main content from the page
   const title = document.title;
-  const headings = Array.from(document.querySelectorAll('h1, h2, h3'))
-    .map((h) => h.textContent?.trim())
-    .filter(Boolean)
-    .slice(0, 5);
+
+  // Use tocbot to find headings intelligently
+  // Create a temporary container for tocbot
+  const tempTocContainer = document.createElement('div');
+  tempTocContainer.id = 'ieee-temp-toc';
+  tempTocContainer.style.display = 'none';
+  document.body.appendChild(tempTocContainer);
+
+  // Initialize tocbot to analyze the page
+  tocbot.init({
+    tocSelector: '#ieee-temp-toc',
+    contentSelector: 'body',
+    headingSelector: 'h1, h2, h3, h4, h5, h6',
+    hasInnerContainers: true,
+    collapseDepth: 6,
+  });
+
+  // Extract headings from the generated TOC
+  const tocLinks = tempTocContainer.querySelectorAll('a');
+  const headings = Array.from(tocLinks).map((link, index) => {
+    const href = link.getAttribute('href');
+    if (!href) return null;
+
+    // Find the actual heading element
+    const headingId = href.substring(1); // Remove the '#'
+    const headingElement = document.getElementById(headingId);
+
+    if (!headingElement) return null;
+
+    const text = headingElement.textContent?.trim();
+    if (!text) return null;
+
+    // Get the heading level
+    const tagName = headingElement.tagName;
+    const level = tagName.match(/^H[1-6]$/) ? parseInt(tagName.substring(1)) : 2;
+
+    // Store index as data attribute for later scrolling
+    headingElement.setAttribute('data-ieee-heading-index', index.toString());
+
+    return {
+      text,
+      level,
+      index,
+      id: headingId,
+    };
+  }).filter(Boolean);
+
+  // Clean up
+  tocbot.destroy();
+  tempTocContainer.remove();
 
   const paragraphs = Array.from(document.querySelectorAll('p'))
     .map((p) => p.textContent?.trim())
@@ -398,60 +279,25 @@ function handleGetPageContent() {
   });
 
   console.log('[IEEE Extension] Page content extracted:', pageData);
+  console.log('[IEEE Extension] Found headings:', headings.length);
 }
 
 /**
- * Handle TOGGLE_SIMPLIFY_VIEW message - hide/show clutter
+ * Handle SCROLL_TO_HEADING message - scroll to a specific heading
  */
-function handleToggleSimplifyView(enabled: boolean) {
-  if (enabled) {
-    // Add simplified view styles
-    const style = document.createElement('style');
-    style.id = 'ieee-simplify-view';
-    style.textContent = `
-      /* Hide common clutter elements */
-      aside,
-      nav:not([role="navigation"]),
-      [role="complementary"],
-      [role="banner"]:not(:first-of-type),
-      .sidebar,
-      .advertisement,
-      .ad,
-      .social-share,
-      .comments,
-      .related-posts,
-      iframe:not([title*="video"]) {
-        display: none !important;
-      }
+function handleScrollToHeading(index: number) {
+  const heading = document.querySelector(`[data-ieee-heading-index="${index}"]`);
 
-      /* Simplify main content */
-      body {
-        max-width: 800px !important;
-        margin: 0 auto !important;
-        padding: 2rem !important;
-        background: white !important;
-      }
+  if (heading) {
+    // Scroll to the heading with smooth behavior
+    heading.scrollIntoView({
+      behavior: 'smooth',
+      block: 'start',
+    });
 
-      /* Enhance readability */
-      p, li {
-        line-height: 1.8 !important;
-        font-size: 18px !important;
-      }
-
-      /* Remove background images and colors */
-      * {
-        background-image: none !important;
-      }
-    `;
-    document.head.appendChild(style);
-    console.log('[IEEE Extension] Simplified view enabled');
+    console.log('[IEEE Extension] Scrolled to heading:', heading.textContent);
   } else {
-    // Remove simplified view styles
-    const style = document.getElementById('ieee-simplify-view');
-    if (style) {
-      style.remove();
-      console.log('[IEEE Extension] Simplified view disabled');
-    }
+    console.warn('[IEEE Extension] Heading not found at index:', index);
   }
 }
 
@@ -463,4 +309,129 @@ function notifyPageLoaded() {
   setTimeout(() => {
     handleGetPageContent();
   }, 1000);
+}
+
+/**
+ * Initialize accessibility features based on user preferences
+ */
+async function initAccessibilityFeatures() {
+  try {
+    // Load user preferences from storage
+    const preferences = await storage.getItem<UserPreferences>('sync:userPreferences');
+
+    if (preferences) {
+      console.log('[IEEE Extension] Applying accessibility preferences:', preferences);
+      applyAccessibilityStyles(preferences);
+
+      // Watch for preference changes
+      storage.watch<UserPreferences>('sync:userPreferences', (newPreferences) => {
+        if (newPreferences) {
+          console.log('[IEEE Extension] Preferences updated:', newPreferences);
+          applyAccessibilityStyles(newPreferences);
+        }
+      });
+    } else {
+      console.log('[IEEE Extension] No preferences found, using defaults');
+    }
+  } catch (error) {
+    console.error('[IEEE Extension] Failed to load preferences:', error);
+  }
+}
+
+/**
+ * Apply accessibility styles based on user preferences
+ */
+function applyAccessibilityStyles(preferences: UserPreferences) {
+  // Remove existing style element if it exists
+  const existingStyle = document.getElementById('ieee-accessibility-styles');
+  if (existingStyle) {
+    existingStyle.remove();
+  }
+
+  // Create new style element
+  const styleElement = document.createElement('style');
+  styleElement.id = 'ieee-accessibility-styles';
+
+  let css = '';
+
+  // Zoom rate adjustments
+  if (preferences.fontSize === 'large') {
+    css += `
+      body {
+        zoom: 1.25 !important;
+      }
+    `;
+  } else if (preferences.fontSize === 'extra-large') {
+    css += `
+      body {
+        zoom: 1.5 !important;
+      }
+    `;
+  }
+
+  // Link styling
+  if (preferences.linkStyle === 'underline') {
+    css += `
+      a, a:link, a:visited {
+        text-decoration: underline !important;
+      }
+    `;
+  } else if (preferences.linkStyle === 'highlight') {
+    css += `
+      a, a:link, a:visited {
+        background-color: #FEF08A !important;
+        padding: 2px 4px !important;
+        border-radius: 2px !important;
+      }
+    `;
+  } else if (preferences.linkStyle === 'border') {
+    css += `
+      a, a:link, a:visited {
+        border: 2px solid currentColor !important;
+        padding: 2px 4px !important;
+        border-radius: 4px !important;
+        text-decoration: none !important;
+      }
+    `;
+  }
+
+  // High contrast mode (Yellow on Black)
+  if (preferences.contrastMode === 'high-contrast-yellow') {
+    css += `
+      body, body * {
+        background-color: #000000 !important;
+        color: #FFFF00 !important;
+        border-color: #FFFF00 !important;
+      }
+
+      a, a:link, a:visited {
+        color: #FFFF00 !important;
+      }
+
+      img, video, iframe {
+        filter: brightness(0.8) contrast(1.2) !important;
+      }
+    `;
+  }
+
+  // Hide ads
+  if (preferences.hideAds) {
+    css += `
+      /* Common ad selectors */
+      [class*="ad-"], [id*="ad-"],
+      [class*="advertisement"], [id*="advertisement"],
+      [class*="banner"], [id*="banner"],
+      .ad, .ads, .advert, .advertisement,
+      iframe[src*="doubleclick"],
+      iframe[src*="googlesyndication"] {
+        display: none !important;
+        visibility: hidden !important;
+      }
+    `;
+  }
+
+  styleElement.textContent = css;
+  document.head.appendChild(styleElement);
+
+  console.log('[IEEE Extension] Accessibility styles applied');
 }

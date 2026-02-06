@@ -1,3 +1,3 @@
 export default defineBackground(() => {
-  console.log('Hello background!', { id: browser.runtime.id });
+  console.log('[IEEE Extension] Background script loaded', { id: browser.runtime.id });
 });

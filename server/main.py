@@ -10,6 +10,10 @@ from typing import Any, Dict, List, Tuple, Optional
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 from models import (
     ChatRequest,
@@ -815,3 +819,18 @@ def openai_test():
     data = resp.json()
     text_out = data["choices"][0]["message"]["content"] if data.get("choices") else ""
     return {"ok": True, "model": data.get("model", get_openai_model()), "text": text_out}
+
+
+@app.post("/text-completion")
+def text_completion(body: Dict[str, Any]):
+    """Simple text-to-OpenAI endpoint. Send JSON: {"text": "your prompt", "temperature": 0.7}"""
+    text = body.get("text", "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="'text' field is required")
+
+    temperature = body.get("temperature", 0.7)
+
+    messages = [{"role": "user", "content": text}]
+    response_text, model_used = call_openai_chat(messages=messages, temperature=temperature)
+
+    return {"ok": True, "model": model_used, "response": response_text}

@@ -16,9 +16,11 @@
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.18",
+    "@wxt-dev/storage": "^1.2.6",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
-    "tailwindcss": "^4.1.18"
+    "tailwindcss": "^4.1.18",
+    "tocbot": "^4.36.4"
   },
   "devDependencies": {
     "@types/react": "^19.2.7",

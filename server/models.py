@@ -104,3 +104,16 @@ class ChatResponse(BaseModel):
     answer: str
     page_id: Optional[str] = None
     simplification_id: Optional[str] = None
+
+
+# ----------------- Simple text completion -----------------
+
+class TextCompletionRequest(BaseModel):
+    text: str = Field(..., min_length=1, description="Text prompt to send to OpenAI")
+    temperature: float = Field(0.7, ge=0.0, le=2.0, description="Temperature for response randomness")
+
+
+class TextCompletionResponse(BaseModel):
+    ok: bool = True
+    model: str
+    response: str
