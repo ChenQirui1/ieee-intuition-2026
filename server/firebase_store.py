@@ -125,7 +125,51 @@ def sha256_hex(s: str) -> str:
 
 
 def dump(x: Any) -> Any:
-    return x.model_dump() if hasattr(x, "model_dump") else x
+    """Convert Pydantic models to JSON-compatible dicts for Firestore."""
+    if hasattr(x, "model_dump"):
+        # Use mode='json' to ensure all nested types are JSON-serializable
+        return x.model_dump(mode='json')
+    return x
+
+
+def ensure_firestore_compatible(data: Any) -> Any:
+    """
+    Recursively convert data to Firestore-compatible format.
+    Firestore has strict requirements:
+    - No nested Pydantic models
+    - Arrays must contain only primitives or simple dicts
+    - All values must be JSON-serializable
+    """
+    if data is None:
+        return None
+
+    # Handle Pydantic models
+    if hasattr(data, "model_dump"):
+        data = data.model_dump(mode='json')
+
+    # Handle dictionaries
+    if isinstance(data, dict):
+        return {k: ensure_firestore_compatible(v) for k, v in data.items()}
+
+    # Handle lists/tuples
+    if isinstance(data, (list, tuple)):
+        return [ensure_firestore_compatible(item) for item in data]
+
+    # Handle primitives (str, int, float, bool)
+    if isinstance(data, (str, int, float, bool)):
+        return data
+
+    # Handle datetime objects
+    if hasattr(data, 'isoformat'):
+        return data.isoformat()
+
+    # Fallback: convert to string
+    try:
+        # Try JSON serialization as a test
+        json.dumps(data)
+        return data
+    except (TypeError, ValueError):
+        return str(data)
 
 
 # ---------------- Deterministic IDs ----------------
@@ -182,14 +226,15 @@ def save_page(
 ) -> str:
     page_id = page_id_for_url(url)
 
+    # Convert all data to Firestore-compatible format
     doc: Dict[str, Any] = {
         "url": url,
         "session_id": session_id,
         "status": "ready",
-        "meta": dump(meta),
-        "blocks": [dump(b) for b in (blocks or [])],
-        "links": [dump(l) for l in (links or [])],
-        "images": [dump(i) for i in (images or [])],
+        "meta": ensure_firestore_compatible(meta),
+        "blocks": ensure_firestore_compatible(blocks),
+        "links": ensure_firestore_compatible(links),
+        "images": ensure_firestore_compatible(images),
         "source_text": source_text,
         "source_text_hash": source_text_hash,
         "updated_at": server_timestamp(),
@@ -247,7 +292,7 @@ def save_simplification(
         "language": language,
         "session_id": session_id,
         "llm": {"provider": "openai", "model": model},
-        "output": output,
+        "output": ensure_firestore_compatible(output),
         "status": "success",
         "error": None,
         "updated_at": server_timestamp(),

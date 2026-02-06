@@ -1,6 +1,6 @@
 {
-  "name": "wxt-react-starter",
-  "description": "manifest.json description",
+  "name": "clearweb",
+  "description": "ClearWeb - Web Accessibility Extension",
   "private": true,
   "version": "0.0.0",
   "type": "module",

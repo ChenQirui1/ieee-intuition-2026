@@ -5,6 +5,8 @@ import tailwindcss from "@tailwindcss/vite";
 export default defineConfig({
   modules: ["@wxt-dev/module-react"],
   manifest: {
+    name: "ClearWeb",
+    description: "Make the web easier to read and understand with AI-powered summaries and chat",
     permissions: ["storage"],
   },
   vite: () =>

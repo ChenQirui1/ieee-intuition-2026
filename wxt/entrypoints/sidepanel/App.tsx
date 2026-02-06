@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { browser } from 'wxt/browser';
 import { storage } from '@wxt-dev/storage';
+import { simplifyPage, sendChatCompletion } from './api';
 
 interface Message {
   id: string;
@@ -38,9 +39,54 @@ function App() {
   const [activeTab, setActiveTab] = useState<'summary' | 'chat' | 'headings'>('summary');
   const [selectionMode, setSelectionMode] = useState(false);
   const [zoomLevel, setZoomLevel] = useState(1);
+  const [currentUrl, setCurrentUrl] = useState<string>('');
+  const [pageId, setPageId] = useState<string>('');
+  const [simplificationId, setSimplificationId] = useState<string>('');
+  const [sessionId, setSessionId] = useState<string>('');
+  const [error, setError] = useState<string>('');
+  const [backendStatus, setBackendStatus] = useState<'unknown' | 'connected' | 'disconnected'>('unknown');
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    // Initialize session ID
+    const initSession = async () => {
+      let sid = await storage.getItem<string>('session:sessionId');
+      if (!sid) {
+        sid = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        await storage.setItem('session:sessionId', sid);
+      }
+      setSessionId(sid);
+    };
+    initSession();
+
+    // Test backend connection
+    testBackendConnection();
+
+    // Get current tab URL
+    const getCurrentUrl = async () => {
+      try {
+        const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+        if (tabs[0]?.url) {
+          setCurrentUrl(tabs[0].url);
+          // Load cached context for this URL
+          const cachedPageId = await storage.getItem<string>(`session:pageId:${tabs[0].url}`);
+          const cachedSimplId = await storage.getItem<string>(`session:simplificationId:${tabs[0].url}`);
+          if (cachedPageId) setPageId(cachedPageId);
+          if (cachedSimplId) setSimplificationId(cachedSimplId);
+
+          // Load chat messages for this URL
+          const savedMessages = await storage.getItem<Message[]>(`local:chatMessages:${tabs[0].url}`);
+          if (savedMessages && Array.isArray(savedMessages)) {
+            console.log('[Sidepanel] Loaded saved messages:', savedMessages.length);
+            setMessages(savedMessages);
+          }
+        }
+      } catch (error) {
+        console.error('[Sidepanel] Failed to get current URL:', error);
+      }
+    };
+    getCurrentUrl();
+
     // Listen for messages from content script
     const handleMessage = (message: any) => {
       console.log('[Sidepanel] Received message:', message);
@@ -147,23 +193,70 @@ function App() {
   };
 
   const generatePageSummary = async (pageData: any) => {
+    console.log('[Sidepanel] generatePageSummary called with pageData:', pageData);
     setIsLoading(true);
+    setError('');
     try {
-      // TODO: Replace with actual AI API call
-      // Mock AI response for now
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      if (!currentUrl) {
+        const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+        if (tabs[0]?.url) {
+          console.log('[Sidepanel] Got URL from tab:', tabs[0].url);
+          setCurrentUrl(tabs[0].url);
+        } else {
+          throw new Error('Could not get current tab URL');
+        }
+      }
 
-      setSummary({
-        bullets: [
-          'This page contains information about web accessibility',
-          'Key topics include ARIA labels and semantic HTML',
-          'Interactive elements are highlighted for easier navigation',
-        ],
+      const url = currentUrl || (await browser.tabs.query({ active: true, currentWindow: true }))[0]?.url;
+      if (!url) {
+        throw new Error('No URL available');
+      }
+
+      console.log('[Sidepanel] Calling simplifyPage API with URL:', url);
+      console.log('[Sidepanel] Session ID:', sessionId);
+
+      // Call the real API
+      const response = await simplifyPage(url, 'easy_read', 'en', sessionId);
+
+      console.log('[Sidepanel] API response received:', {
+        page_id: response.page_id,
+        language: response.language,
+        has_outputs: !!response.outputs,
+        has_easy_read: !!response.outputs?.easy_read
       });
+
+      // Store context in session storage
+      setPageId(response.page_id);
+      setSimplificationId(response.simplification_ids.easy_read || '');
+      await storage.setItem(`session:pageId:${url}`, response.page_id);
+      await storage.setItem(`session:simplificationId:${url}`, response.simplification_ids.easy_read || '');
+
+      // Extract summary from easy_read output
+      const easyRead = response.outputs.easy_read;
+      if (easyRead) {
+        console.log('[Sidepanel] Extracted key_points:', easyRead.key_points);
+        setSummary({
+          bullets: easyRead.key_points || [],
+        });
+      } else {
+        console.warn('[Sidepanel] No easy_read output in response');
+        setSummary({
+          bullets: ['Summary not available. Please try again.'],
+        });
+      }
     } catch (error) {
       console.error('[Sidepanel] Failed to generate summary:', error);
+      console.error('[Sidepanel] Error details:', {
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined
+      });
+      setError(error instanceof Error ? error.message : 'Failed to generate summary');
+      setSummary({
+        bullets: ['Failed to load summary. Make sure the backend server is running.'],
+      });
     } finally {
       setIsLoading(false);
+      console.log('[Sidepanel] generatePageSummary completed');
     }
   };
 
@@ -174,31 +267,65 @@ function App() {
       return;
     }
 
-    // Add user message
+    // Add user message - focus on content, not HTML element type
     const userMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
-      content: `Explain this ${tag}: "${text.substring(0, 100)}${text.length > 100 ? '...' : ''}"`,
+      content: `What does this mean: "${text.substring(0, 200)}${text.length > 200 ? '...' : ''}"`,
       timestamp: new Date(),
     };
-    setMessages((prev) => [...prev, userMessage]);
+    const updatedMessages = [...messages, userMessage];
+    setMessages(updatedMessages);
+
+    // Save to local storage
+    await storage.setItem(`local:chatMessages:${currentUrl}`, updatedMessages);
 
     // Generate AI response
     setIsLoading(true);
+    setError('');
     try {
-      // TODO: Replace with actual AI API call
-      // Mock AI response for now
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      // Add system prompt for simple, accessible responses
+      const systemPrompt = {
+        role: 'system' as const,
+        content: 'You are a helpful assistant that explains things in very simple, easy-to-understand language. Use short sentences. Avoid jargon and technical terms. If you must use a complex word, explain it immediately. Break down complex ideas into simple steps. Use examples when helpful. Your goal is to make information accessible to everyone, including people with cognitive disabilities or those learning English.'
+      };
+
+      // Convert to API format with system prompt
+      const apiMessages = [
+        systemPrompt,
+        ...updatedMessages.map((msg) => ({
+          role: msg.role,
+          content: msg.content,
+        }))
+      ];
+
+      // Call the text-completion API
+      const response = await sendChatCompletion(apiMessages, 0.7);
 
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: `This part is about ${text.substring(0, 50)}. In simpler terms, it means that the content is explaining something important to help you understand the topic better.`,
+        content: response.response,
         timestamp: new Date(),
       };
-      setMessages((prev) => [...prev, assistantMessage]);
+      const finalMessages = [...updatedMessages, assistantMessage];
+      setMessages(finalMessages);
+
+      // Save to local storage
+      await storage.setItem(`local:chatMessages:${currentUrl}`, finalMessages);
     } catch (error) {
       console.error('[Sidepanel] Failed to get AI response:', error);
+      setError(error instanceof Error ? error.message : 'Failed to get response');
+
+      const errorMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: 'Sorry, I could not process your request. Please make sure the backend server is running.',
+        timestamp: new Date(),
+      };
+      const finalMessages = [...updatedMessages, errorMessage];
+      setMessages(finalMessages);
+      await storage.setItem(`local:chatMessages:${currentUrl}`, finalMessages);
     } finally {
       setIsLoading(false);
     }
@@ -223,6 +350,23 @@ function App() {
     browser.runtime.openOptionsPage();
   };
 
+  const testBackendConnection = async () => {
+    try {
+      const response = await fetch('http://127.0.0.1:8000/openai-test', {
+        method: 'GET',
+        signal: AbortSignal.timeout(5000), // 5 second timeout
+      });
+      if (response.ok) {
+        setBackendStatus('connected');
+      } else {
+        setBackendStatus('disconnected');
+      }
+    } catch (error) {
+      console.error('[Sidepanel] Backend connection test failed:', error);
+      setBackendStatus('disconnected');
+    }
+  };
+
   const handleSubmitMessage = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -239,24 +383,58 @@ function App() {
       content: text,
       timestamp: new Date(),
     };
-    setMessages((prev) => [...prev, userMessage]);
+    const updatedMessages = [...messages, userMessage];
+    setMessages(updatedMessages);
+
+    // Save to local storage
+    await storage.setItem(`local:chatMessages:${currentUrl}`, updatedMessages);
 
     // Generate AI response
     setIsLoading(true);
+    setError('');
     try {
-      // TODO: Replace with actual AI API call
-      // Mock AI response for now
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      // Add system prompt for simple, accessible responses
+      const systemPrompt = {
+        role: 'system' as const,
+        content: 'You are a helpful assistant that explains things in very simple, easy-to-understand language. Use short sentences. Avoid jargon and technical terms. If you must use a complex word, explain it immediately. Break down complex ideas into simple steps. Use examples when helpful. Your goal is to make information accessible to everyone, including people with cognitive disabilities or those learning English.'
+      };
+
+      // Convert to API format with system prompt
+      const apiMessages = [
+        systemPrompt,
+        ...updatedMessages.map((msg) => ({
+          role: msg.role,
+          content: msg.content,
+        }))
+      ];
+
+      // Call the text-completion API
+      const response = await sendChatCompletion(apiMessages, 0.7);
 
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: `I understand you're asking about "${text}". Let me help explain that in simpler terms. This is a mock response that will be replaced with actual AI processing.`,
+        content: response.response,
         timestamp: new Date(),
       };
-      setMessages((prev) => [...prev, assistantMessage]);
+      const finalMessages = [...updatedMessages, assistantMessage];
+      setMessages(finalMessages);
+
+      // Save to local storage
+      await storage.setItem(`local:chatMessages:${currentUrl}`, finalMessages);
     } catch (error) {
       console.error('[Sidepanel] Failed to get AI response:', error);
+      setError(error instanceof Error ? error.message : 'Failed to get response');
+
+      const errorMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: 'Sorry, I could not process your request. Please make sure the backend server is running.',
+        timestamp: new Date(),
+      };
+      const finalMessages = [...updatedMessages, errorMessage];
+      setMessages(finalMessages);
+      await storage.setItem(`local:chatMessages:${currentUrl}`, finalMessages);
     } finally {
       setIsLoading(false);
     }
@@ -278,6 +456,23 @@ function App() {
 
   return (
     <div className="flex flex-col h-screen bg-gray-50">
+      {/* Error Banner */}
+      {error && (
+        <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-3 text-sm">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="font-bold">⚠️ Error:</span>
+              <span>{error}</span>
+            </div>
+            <button
+              onClick={() => setError('')}
+              className="text-red-700 hover:text-red-900 font-bold"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
       {/* Header with Tabs */}
       <div className="bg-gradient-to-r from-blue-600 to-blue-700 text-white shadow-lg">
         <div className="flex border-b border-blue-500">
@@ -319,8 +514,8 @@ function App() {
         /* Summary Tab */
         <>
           <div className="flex-1 overflow-y-auto p-6">
-            <h2 className="text-2xl font-bold text-gray-800 mb-4 flex items-center gap-2">
-              <span className="text-3xl">💡</span>
+            <h2 className="text-3xl font-bold text-gray-800 mb-4 flex items-center gap-2">
+              <span className="text-4xl">💡</span>
               In short...
             </h2>
             {isLoading && !summary ? (
@@ -332,14 +527,14 @@ function App() {
             ) : summary ? (
               <ul className="space-y-3">
                 {summary.bullets.map((bullet, idx) => (
-                  <li key={idx} className="flex items-start gap-3 text-base">
-                    <span className="text-blue-600 mt-1 text-xl">•</span>
+                  <li key={idx} className="flex items-start gap-3 text-lg">
+                    <span className="text-blue-600 mt-1 text-2xl">•</span>
                     <span className="leading-relaxed text-gray-700">{bullet}</span>
                   </li>
                 ))}
               </ul>
             ) : (
-              <p className="text-gray-500">
+              <p className="text-gray-500 text-lg">
                 Loading page summary...
               </p>
             )}
@@ -347,6 +542,40 @@ function App() {
 
           {/* Controls for Summary Tab */}
           <div className="bg-white border-t border-gray-200 p-4 shadow-lg">
+            {/* Backend Status */}
+            <div className="mb-3 p-2 rounded-lg bg-gray-50 border border-gray-200">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-gray-600">Backend:</span>
+                  {backendStatus === 'connected' && (
+                    <span className="text-xs text-green-600 flex items-center gap-1">
+                      <span className="w-2 h-2 bg-green-500 rounded-full"></span>
+                      Connected
+                    </span>
+                  )}
+                  {backendStatus === 'disconnected' && (
+                    <span className="text-xs text-red-600 flex items-center gap-1">
+                      <span className="w-2 h-2 bg-red-500 rounded-full"></span>
+                      Disconnected
+                    </span>
+                  )}
+                  {backendStatus === 'unknown' && (
+                    <span className="text-xs text-gray-500 flex items-center gap-1">
+                      <span className="w-2 h-2 bg-gray-400 rounded-full"></span>
+                      Testing...
+                    </span>
+                  )}
+                </div>
+                <button
+                  onClick={testBackendConnection}
+                  className="px-2 py-1 text-xs bg-blue-100 hover:bg-blue-200 rounded transition-colors"
+                  title="Test backend connection"
+                >
+                  🔄 Test
+                </button>
+              </div>
+            </div>
+
             {/* Zoom Controls */}
             <div className="mb-3">
               <div className="flex items-center justify-between mb-2">
@@ -397,21 +626,21 @@ function App() {
         <>
           <div className="flex-1 overflow-y-auto p-6">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
-                <span className="text-3xl">📑</span>
+              <h2 className="text-3xl font-bold text-gray-800 flex items-center gap-2">
+                <span className="text-4xl">📑</span>
                 Table of Contents
               </h2>
               <button
                 onClick={requestPageSummary}
-                className="px-3 py-1 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                className="px-3 py-1 text-base bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
               >
                 🔄 Refresh
               </button>
             </div>
             {headings.length === 0 ? (
-              <div className="text-gray-500">
+              <div className="text-gray-500 text-lg">
                 <p className="mb-2">No headings found on this page.</p>
-                <p className="text-sm">Try clicking the Refresh button above.</p>
+                <p className="text-base">Try clicking the Refresh button above.</p>
               </div>
             ) : (
               <nav className="space-y-1">
@@ -420,9 +649,9 @@ function App() {
                     key={idx}
                     onClick={() => handleHeadingClick(heading)}
                     className={`w-full text-left px-4 py-3 rounded-lg hover:bg-blue-50 transition-colors border border-transparent hover:border-blue-200 ${
-                      heading.level === 1 ? 'font-bold text-base' :
-                      heading.level === 2 ? 'font-semibold text-sm' :
-                      'text-sm'
+                      heading.level === 1 ? 'font-bold text-lg' :
+                      heading.level === 2 ? 'font-semibold text-base' :
+                      'text-base'
                     }`}
                     style={{
                       paddingLeft: `${heading.level * 0.75}rem`,
@@ -504,8 +733,8 @@ function App() {
                     d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
                   />
                 </svg>
-                <p className="text-sm font-medium mb-1">No conversation yet</p>
-                <p className="text-xs">Click on paragraphs or text on the page to start</p>
+                <p className="text-base font-medium mb-1">No conversation yet</p>
+                <p className="text-sm">Click on paragraphs or text on the page to start</p>
               </div>
             ) : (
               <>
@@ -521,7 +750,7 @@ function App() {
                           : 'bg-white text-gray-900 shadow-md border border-gray-200'
                       }`}
                     >
-                      <p className="text-sm leading-relaxed">{message.content}</p>
+                      <p className="text-base leading-relaxed">{message.content}</p>
                       <p
                         className={`text-xs mt-1 ${
                           message.role === 'user' ? 'text-blue-100' : 'text-gray-500'

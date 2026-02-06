@@ -106,6 +106,11 @@ function initClickHandler() {
   });
 
   document.addEventListener('click', (event) => {
+    // Only handle clicks when selection mode is ON
+    if (!selectionMode) {
+      return; // Allow normal clicking when selection mode is OFF
+    }
+
     const target = event.target as HTMLElement;
 
     // Skip if clicking on the extension's own elements
@@ -118,61 +123,38 @@ function initClickHandler() {
       return;
     }
 
-    // If selection mode is ON, prevent default behavior
-    if (selectionMode) {
-      event.preventDefault();
-      event.stopPropagation();
+    // Prevent default behavior when selection mode is ON
+    event.preventDefault();
+    event.stopPropagation();
 
-      // Remove previous selection
-      if (selectedElement) {
-        selectedElement = null;
-      }
-
-      selectedElement = target;
-
-      // Extract text content
-      const text = target.textContent?.trim() || '';
-
-      // Extract element information
-      const elementData = {
-        tag: target.tagName.toLowerCase(),
-        text: text,
-        id: target.id || undefined,
-        classes: Array.from(target.classList),
-      };
-
-      // Send to sidepanel to open chat
-      browser.runtime.sendMessage({
-        type: 'ELEMENT_CLICKED',
-        data: elementData,
-        openChat: true, // Flag to switch to chat tab
-      }).catch(() => {
-        // Sidepanel might not be open, that's okay
-      });
-
-      console.log('[IEEE Extension] Element selected:', elementData);
-      return;
+    // Remove previous selection
+    if (selectedElement) {
+      selectedElement = null;
     }
 
-    // If selection mode is OFF, allow normal clicking
-    // Only send to sidepanel if there's meaningful text content
+    selectedElement = target;
+
+    // Extract text content
     const text = target.textContent?.trim() || '';
-    if (text.length >= 10) {
-      const elementData = {
-        tag: target.tagName.toLowerCase(),
-        text: text,
-        id: target.id || undefined,
-        classes: Array.from(target.classList),
-      };
 
-      // Send to sidepanel (non-blocking)
-      browser.runtime.sendMessage({
-        type: 'ELEMENT_CLICKED',
-        data: elementData,
-      }).catch(() => {
-        // Sidepanel might not be open, that's okay
-      });
-    }
+    // Extract element information
+    const elementData = {
+      tag: target.tagName.toLowerCase(),
+      text: text,
+      id: target.id || undefined,
+      classes: Array.from(target.classList),
+    };
+
+    // Send to sidepanel to open chat
+    browser.runtime.sendMessage({
+      type: 'ELEMENT_CLICKED',
+      data: elementData,
+      openChat: true, // Flag to switch to chat tab
+    }).catch(() => {
+      // Sidepanel might not be open, that's okay
+    });
+
+    console.log('[IEEE Extension] Element selected:', elementData);
   }, true);
 
   function addHoverHighlight(element: HTMLElement) {

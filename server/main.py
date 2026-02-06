@@ -823,14 +823,37 @@ def openai_test():
 
 @app.post("/text-completion")
 def text_completion(body: Dict[str, Any]):
-    """Simple text-to-OpenAI endpoint. Send JSON: {"text": "your prompt", "temperature": 0.7}"""
-    text = body.get("text", "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail="'text' field is required")
-
+    """
+    Text completion endpoint for ClearWeb.
+    Supports two formats:
+    1. Simple: {"text": "your prompt", "temperature": 0.7}
+    2. Chat: {"messages": [{"role": "user", "content": "..."}, ...], "temperature": 0.7}
+    """
     temperature = body.get("temperature", 0.7)
 
-    messages = [{"role": "user", "content": text}]
-    response_text, model_used = call_openai_chat(messages=messages, temperature=temperature)
+    # Check if messages array is provided (chat format)
+    if "messages" in body:
+        messages = body.get("messages", [])
+        if not messages:
+            raise HTTPException(status_code=400, detail="'messages' array cannot be empty")
+
+        # Validate message format
+        for msg in messages:
+            if not isinstance(msg, dict) or "role" not in msg or "content" not in msg:
+                raise HTTPException(status_code=400, detail="Each message must have 'role' and 'content'")
+
+        response_text, model_used = call_openai_chat(messages=messages, temperature=temperature)
+
+    # Simple text format
+    elif "text" in body:
+        text = body.get("text", "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="'text' field is required")
+
+        messages = [{"role": "user", "content": text}]
+        response_text, model_used = call_openai_chat(messages=messages, temperature=temperature)
+
+    else:
+        raise HTTPException(status_code=400, detail="Either 'text' or 'messages' field is required")
 
     return {"ok": True, "model": model_used, "response": response_text}
