@@ -2,11 +2,11 @@
  * API service for connecting to the backend server
  */
 
-// Local development
-const API_BASE_URL = 'http://127.0.0.1:8000';
+// Production
+const API_BASE_URL = 'https://ieee-intuition-2026-production.up.railway.app';
 
-// Production (uncomment when ready to deploy)
-// const API_BASE_URL = 'https://ieee-intuition-2026-production.up.railway.app';
+// Local development (uncomment for local testing)
+// const API_BASE_URL = 'http://127.0.0.1:8000';
 
 export interface SimplifyResponse {
   ok: boolean;
