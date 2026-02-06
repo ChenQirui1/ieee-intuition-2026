@@ -17,29 +17,14 @@ IEEE Intuition 2026 is built to address accessibility challenges by:
 
 The project is organized into three main modules:
 
-### 1. **Client** (`/client`)
-Next.js 16.1.6 web application built with React 19 and TypeScript.
+### To run
 
-**Key Technologies:**
-- Next.js with App Router
-- React 19.2.3
-- Tailwind CSS 4 for styling
-- TypeScript 5
+### 1. **Server** (`/server`)
 
-**Scripts:**
-- `pnpm dev` - Start development server on port 3000
-- `pnpm build` - Production build
-- `pnpm start` - Run production build
-- `pnpm lint` - Run ESLint
-
-**Features:**
-- Web-based dashboard
-- Content viewing and management interface
-
-### 2. **Server** (`/server`)
 FastAPI-based Python backend with Firebase integration for persistent storage.
 
 **Key Technologies:**
+
 - FastAPI 0.128.1 - Modern async Python web framework
 - Firebase Admin SDK for Firestore database
 - BeautifulSoup 4 for HTML parsing
@@ -49,6 +34,7 @@ FastAPI-based Python backend with Firebase integration for persistent storage.
 **Main Components:**
 
 #### `main.py` - Core API
+
 FastAPI application exposing three primary endpoints:
 
 1. **`POST /scrap`** - Web scraping endpoint
@@ -72,34 +58,42 @@ FastAPI application exposing three primary endpoints:
    - Integrated with simplification context
 
 #### `scraper.py` - Web Scraping
+
 - `fetch_and_parse_html()` - Safely fetch and parse web pages
 - `extract_blocks_in_order()` - Extract semantic blocks (headings, paragraphs, lists, tables)
 - `extract_meta()` - Extract page metadata (title, description, canonical URL)
 - `extract_links_and_images()` - Extract all links and images with context
 
 #### `firebase_store.py` - Data Persistence
+
 - Firebase/Firestore integration
 - Caching layer for pages and simplifications
 - Session management
 - SHA256 content hashing for deduplication
 
 #### `models.py` - Pydantic Data Models
+
 Request/response schemas:
+
 - `ScrapRequest` / `ScrapResponse`
 - `SimplifyRequest` / `SimplifyResponse`
 - `ChatRequest` / `ChatResponse`
 
 **Scripts:**
+
 - `python main.py` - Start the FastAPI server (runs on port 8000 by default)
 
 **Configuration:**
+
 - CORS configured for localhost:3000 and localhost:5173
 - Firebase credentials stored in `secrets/firebase-admin.json`
 
-### 3. **WXT Browser Extension** (`/wxt`)
+### 2. **WXT Browser Extension** (`/wxt`)
+
 Browser extension built with WXT framework, React, and TypeScript for Chrome/Firefox.
 
 **Key Technologies:**
+
 - WXT 0.20.6 - Web extension framework
 - React 19.2.3
 - Tailwind CSS 4 with Vite integration
@@ -118,6 +112,7 @@ Browser extension built with WXT framework, React, and TypeScript for Chrome/Fir
   - Displays simplifications while browsing
 
 **Scripts:**
+
 - `pnpm dev` - Start development with hot reload
 - `pnpm dev:firefox` - Development for Firefox
 - `pnpm build` - Production build
@@ -126,6 +121,7 @@ Browser extension built with WXT framework, React, and TypeScript for Chrome/Fir
 - `pnpm compile` - TypeScript type checking
 
 **Types:**
+
 - `types/userProfile.ts` - User data structures
 
 ## 🌐 Supported Languages
@@ -133,17 +129,89 @@ Browser extension built with WXT framework, React, and TypeScript for Chrome/Fir
 The system validates and ensures output is in the target language:
 
 - **English** (en) - Default
+
+WIP
+
 - **Simplified Chinese** (zh) - 简体中文
 - **Malay** (ms) - Bahasa Melayu
 - **Tamil** (ta) - தமிழ்
 
 Each language includes specialized prompting and validation heuristics.
 
-## 🚀 Getting Started
+## � Running the Chrome Extension (Pre-built)
+
+Using the pre-built extension package (`clearweb_chrome_extension.zip`):
+
+1. **Extract the extension:**
+   - Unzip `clearweb_chrome_extension.zip` to a folder on your computer
+
+2. **Load in Chrome:**
+   - Open Chrome and navigate to `chrome://extensions/`
+   - Enable **Developer mode** (toggle in top right corner)
+   - Click **Load unpacked**
+   - Select the unzipped extension folder
+   - The IEEE Intuition 2026 extension should now appear in your toolbar
+
+3. **Start using:**
+   - Click the extension icon while browsing any website
+   - The extension will connect to the backend API to simplify content
+
+**Note:** Make sure the backend server is running at `https://ieee-intuition-2026-production.up.railway.app` or update the API endpoint in the extension settings.
+
+## 🛠️ Building in Local Environment
+
+To build and develop the project locally from source:
+
+### Backend (Server)
+
+```bash
+cd server
+
+# Create and activate virtual environment
+python -m venv .venv
+# Windows:
+.venv\Scripts\activate
+# macOS/Linux:
+source .venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Run development server
+python main.py
+# Server runs on http://localhost:8000
+```
+
+### Browser Extension (WXT)
+
+```bash
+cd wxt
+
+# Install dependencies
+pnpm install
+
+# Development mode (with hot reload)
+pnpm dev
+# For Firefox:
+pnpm dev:firefox
+
+# Production build
+pnpm build
+# For Firefox:
+pnpm build:firefox
+
+# Create distributable package
+pnpm zip
+```
+
+The built extension will be in `wxt/.output/` directory. Load the appropriate build folder in your browser's extension manager.
+
+## �🚀 Getting Started
 
 ### Prerequisites
 
 #### System Requirements
+
 - **Windows, macOS, or Linux**
 - **Node.js 18+** - Download from [nodejs.org](https://nodejs.org)
 - **Python 3.10+** - Download from [python.org](https://www.python.org)
@@ -152,7 +220,9 @@ Each language includes specialized prompting and validation heuristics.
 - **Firebase project** with Firestore enabled
 
 #### Verification
+
 Check your versions:
+
 ```bash
 node --version        # Should be v18.0.0 or higher
 python --version      # Should be 3.10 or higher
@@ -198,6 +268,7 @@ This step must be done before running the server.
 #### Step 2: Install Backend Environment
 
 **On Windows:**
+
 ```bash
 cd server
 
@@ -216,6 +287,7 @@ pip list
 ```
 
 **On macOS/Linux:**
+
 ```bash
 cd server
 
@@ -234,27 +306,10 @@ pip list
 ```
 
 **Troubleshooting:**
+
 - If `python -m venv` fails, try `python3 -m venv`
 - If `pip install` is slow, try: `pip install --upgrade pip`
 - Ensure you're in the `server/` directory before running commands
-
-#### Step 3: Install Frontend Dependencies
-
-```bash
-# Navigate to client directory
-cd ../client
-
-# Install Node dependencies
-pnpm install
-
-# Verify installation
-pnpm list | head -20
-```
-
-**If pnpm is not installed:**
-```bash
-npm install -g pnpm
-```
 
 #### Step 4: Install Browser Extension Dependencies
 
@@ -286,6 +341,7 @@ No additional setup needed for local development. The client is configured to co
 #### Step 6: Verify All Environments
 
 **Backend Python:**
+
 ```bash
 cd server
 # Ensure .venv is activated
@@ -293,6 +349,7 @@ python -c "import fastapi; import firebase_admin; print('✓ Backend dependencie
 ```
 
 **Frontend Node:**
+
 ```bash
 cd ../client
 node -v
@@ -300,6 +357,7 @@ pnpm list next react
 ```
 
 **Extension Node:**
+
 ```bash
 cd ../wxt
 pnpm compile
@@ -310,6 +368,7 @@ pnpm compile
 Once all environments are set up, you can start the development servers:
 
 **Terminal 1 - Backend API:**
+
 ```bash
 cd server
 
@@ -324,6 +383,7 @@ python main.py
 ```
 
 **Expected output:**
+
 ```
 Uvicorn running on http://127.0.0.1:8000
 Press CTRL+C to quit
@@ -331,37 +391,25 @@ Press CTRL+C to quit
 
 Visit `http://localhost:8000/docs` to see the interactive API documentation.
 
-**Terminal 2 - Web Client:**
-```bash
-cd client
-pnpm dev
-```
+**Browser Extension Frontend:**
 
-**Expected output:**
-```
-  ▲ Next.js 16.1.6
-  - Local:        http://localhost:3000
-  - Environments: .env.local
-```
-
-Visit `http://localhost:3000` in your browser.
-
-**Terminal 3 - Browser Extension (Optional):**
 ```bash
 cd wxt
 pnpm dev
 ```
 
 **Expected output:**
+
 ```
   ➜  Local:   http://localhost:5173
 ```
 
 To use the extension:
+
 1. Open Chrome and go to `chrome://extensions/`
 2. Enable "Developer mode" (top right)
 3. Click "Load unpacked"
-4. Select the `wxt/dist` folder
+4. Select the clearweb_chrome_extension.zip
 5. The extension should appear in your toolbar
 
 ### First Run Checklist
@@ -371,29 +419,29 @@ To use the extension:
 - [ ] Backend dependencies installed (`pip list` shows packages)
 - [ ] Frontend dependencies installed (`pnpm list` shows packages)
 - [ ] Backend starts without errors (`python main.py`)
-- [ ] API docs accessible at `http://localhost:8000/docs`
-- [ ] Client starts without errors (`pnpm dev`)
-- [ ] Client loads at `http://localhost:3000`
+- [ ] API docs accessible at `https://ieee-intuition-2026-production.up.railway.app/docs`
 
 ### Common Setup Issues
 
-| Issue | Solution |
-|-------|----------|
-| Python venv not activating | Use full path: `./.venv/Scripts/activate` on Windows |
-| `pip install` fails | Upgrade pip: `pip install --upgrade pip` |
-| Firebase credentials error | Check path is `server/secrets/firebase-admin.json` and file exists |
-| Port 8000 already in use | Change in `main.py` or kill existing process |
-| Port 3000 already in use | Next.js auto-uses 3001, or kill existing process |
-| `pnpm` command not found | Install globally: `npm install -g pnpm` |
-| TypeScript compilation errors in extension | Run `pnpm compile` for detailed errors |
-| Browser extension not loading | Ensure `wxt/dist` folder exists; run `pnpm build` first |
+| Issue                                      | Solution                                                           |
+| ------------------------------------------ | ------------------------------------------------------------------ |
+| Python venv not activating                 | Use full path: `./.venv/Scripts/activate` on Windows               |
+| `pip install` fails                        | Upgrade pip: `pip install --upgrade pip`                           |
+| Firebase credentials error                 | Check path is `server/secrets/firebase-admin.json` and file exists |
+| Port 8000 already in use                   | Change in `main.py` or kill existing process                       |
+| Port 3000 already in use                   | Next.js auto-uses 3001, or kill existing process                   |
+| `pnpm` command not found                   | Install globally: `npm install -g pnpm`                            |
+| TypeScript compilation errors in extension | Run `pnpm compile` for detailed errors                             |
+| Browser extension not loading              | Ensure `wxt/dist` folder exists; run `pnpm build` first            |
 
 ## 📋 API Endpoints
 
 ### Scrap Endpoint
+
 **POST** `/scrap`
 
 Request:
+
 ```json
 {
   "url": "https://example.com/page",
@@ -402,6 +450,7 @@ Request:
 ```
 
 Response:
+
 ```json
 {
   "page_id": "generated-id",
@@ -419,9 +468,11 @@ Response:
 ```
 
 ### Simplify Endpoint
+
 **POST** `/simplify`
 
 Request:
+
 ```json
 {
   "page_id": "page-id",
@@ -435,9 +486,11 @@ Modes: `easy_read`, `checklist`, `step_by_step`
 Response varies by mode with appropriate schema for each.
 
 ### Chat Endpoint
+
 **POST** `/chat`
 
 Request:
+
 ```json
 {
   "page_id": "page-id",
@@ -447,6 +500,7 @@ Request:
 ```
 
 Response:
+
 ```json
 {
   "reply": "AI generated response"
@@ -457,11 +511,6 @@ Response:
 
 ```
 ieee-intuition-2026/
-├── client/                 # Next.js web application
-│   ├── app/               # App Router pages and layouts
-│   ├── public/            # Static assets
-│   ├── package.json
-│   └── tsconfig.json
 ├── server/                # FastAPI backend
 │   ├── main.py           # Main application
 │   ├── models.py         # Pydantic schemas
@@ -496,16 +545,19 @@ ieee-intuition-2026/
 ## 🐛 Troubleshooting
 
 **Backend won't start:**
+
 - Ensure Python venv is activated
-- Check Firebase credentials are in `secrets/firebase-admin.json`
+- Check Firebase credentials are in `firebase-admin.json`
 - Verify port 8000 is not in use
 
 **Client won't load:**
+
 - Ensure backend is running on port 8000
 - Clear `.next` folder and rebuild: `pnpm build`
 - Check CORS settings match your localhost port
 
 **Extension not working:**
+
 - Run `pnpm dev` in wxt folder
 - Load `wxt/dist` folder in Chrome Extensions developer mode
 - Check Console for errors
@@ -513,6 +565,7 @@ ieee-intuition-2026/
 ## 📚 Dependencies
 
 ### Backend Key Packages
+
 - `fastapi` - Web framework
 - `beautifulsoup4` - HTML parsing
 - `firebase-admin` - Database
@@ -520,12 +573,14 @@ ieee-intuition-2026/
 - `pydantic` - Data validation
 
 ### Frontend Key Packages
+
 - `next` - React framework
 - `react` - UI library
 - `tailwindcss` - Styling
 - `typescript` - Type safety
 
 ### Extension Key Packages
+
 - `wxt` - Extension framework
 - `react` - UI
 - `tailwindcss` - Styling
