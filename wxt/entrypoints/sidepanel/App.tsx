@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { browser } from 'wxt/browser';
 import { storage } from '@wxt-dev/storage';
-import { simplifyPage, sendChatCompletion } from './api';
+import { simplifyPage, sendTextCompletion } from './api';
 
 interface Message {
   id: string;
@@ -284,23 +284,23 @@ function App() {
     setIsLoading(true);
     setError('');
     try {
-      // Add system prompt for simple, accessible responses
-      const systemPrompt = {
-        role: 'system' as const,
-        content: 'You are a helpful assistant that explains things in very simple, easy-to-understand language. Use short sentences. Avoid jargon and technical terms. If you must use a complex word, explain it immediately. Break down complex ideas into simple steps. Use examples when helpful. Your goal is to make information accessible to everyone, including people with cognitive disabilities or those learning English.'
-      };
+      // Build conversation history as a single text string
+      let conversationText = 'You are a helpful assistant that explains things in very simple, easy-to-understand language. Use short sentences. Avoid jargon.\n\n';
 
-      // Convert to API format with system prompt
-      const apiMessages = [
-        systemPrompt,
-        ...updatedMessages.map((msg) => ({
-          role: msg.role,
-          content: msg.content,
-        }))
-      ];
+      if (updatedMessages.length > 1) {
+        conversationText += 'Previous conversation:\n';
+        // Include last 5 messages for context
+        const recentMessages = updatedMessages.slice(-6, -1);
+        for (const msg of recentMessages) {
+          conversationText += `${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}\n`;
+        }
+        conversationText += '\n';
+      }
 
-      // Call the text-completion API
-      const response = await sendChatCompletion(apiMessages, 0.7);
+      conversationText += `Text to explain: "${text.substring(0, 500)}"\n\nWhat does this mean?`;
+
+      // Call the text-completion API with conversation history
+      const response = await sendTextCompletion(conversationText, 0.7);
 
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
@@ -393,23 +393,23 @@ function App() {
     setIsLoading(true);
     setError('');
     try {
-      // Add system prompt for simple, accessible responses
-      const systemPrompt = {
-        role: 'system' as const,
-        content: 'You are a helpful assistant that explains things in very simple, easy-to-understand language. Use short sentences. Avoid jargon and technical terms. If you must use a complex word, explain it immediately. Break down complex ideas into simple steps. Use examples when helpful. Your goal is to make information accessible to everyone, including people with cognitive disabilities or those learning English.'
-      };
+      // Build conversation history as a single text string
+      let conversationText = 'You are a helpful assistant that explains things in very simple, easy-to-understand language. Use short sentences. Avoid jargon.\n\n';
 
-      // Convert to API format with system prompt
-      const apiMessages = [
-        systemPrompt,
-        ...updatedMessages.map((msg) => ({
-          role: msg.role,
-          content: msg.content,
-        }))
-      ];
+      if (updatedMessages.length > 1) {
+        conversationText += 'Previous conversation:\n';
+        // Include last 5 messages for context (to avoid too long prompts)
+        const recentMessages = updatedMessages.slice(-6, -1);
+        for (const msg of recentMessages) {
+          conversationText += `${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}\n`;
+        }
+        conversationText += '\n';
+      }
 
-      // Call the text-completion API
-      const response = await sendChatCompletion(apiMessages, 0.7);
+      conversationText += `Current question: ${text}`;
+
+      // Call the text-completion API with conversation history
+      const response = await sendTextCompletion(conversationText, 0.7);
 
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),

@@ -146,13 +146,13 @@ export async function sendChatMessage(
 }
 
 /**
- * Send chat messages to text-completion endpoint
+ * Send a simple text message to text-completion endpoint
  */
-export async function sendChatCompletion(
-  messages: ChatMessage[],
+export async function sendTextCompletion(
+  text: string,
   temperature: number = 0.7
 ): Promise<{ ok: boolean; model: string; response: string }> {
-  console.log('[API] Calling /text-completion with messages:', { messageCount: messages.length });
+  console.log('[API] Calling /text-completion with text:', text.substring(0, 100));
 
   const response = await fetch(`${API_BASE_URL}/text-completion`, {
     method: 'POST',
@@ -160,7 +160,7 @@ export async function sendChatCompletion(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      messages,
+      text,
       temperature,
     }),
   });
