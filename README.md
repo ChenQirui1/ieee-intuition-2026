@@ -585,13 +585,10 @@ ieee-intuition-2026/
 - `react` - UI
 - `tailwindcss` - Styling
 
-## 📄 License
-
-[Add your license information here]
 
 ## 👥 Contributors
 
-[Add contributor information here]
+US
 
 ## 🎓 Context: IEEE Intuition
 
