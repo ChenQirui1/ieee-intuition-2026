@@ -56,6 +56,7 @@ interface UserPreferences {
   fontSize: 'standard' | 'large' | 'extra-large';
   linkStyle: 'default' | 'underline' | 'highlight' | 'border';
   contrastMode: 'standard' | 'high-contrast-yellow';
+  magnifyingZoomLevel: 1.5 | 2 | 2.5 | 3;
   hideAds: boolean;
   simplifyLanguage: boolean;
   showBreadcrumbs: boolean;
@@ -83,6 +84,40 @@ function coerceTtsRate(value: unknown): number {
   if (!Number.isFinite(n)) return DEFAULT_USER_PREFERENCES.ttsRate;
   return SUPPORTED_TTS_RATES.includes(n as any) ? n : DEFAULT_USER_PREFERENCES.ttsRate;
 }
+const SelectionIcon = ({ className }: { className?: string }) => (
+  <svg
+    className={className}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <circle cx="12" cy="12" r="7.5" />
+    <line x1="12" y1="2.5" x2="12" y2="5.5" />
+    <line x1="12" y1="18.5" x2="12" y2="21.5" />
+    <line x1="2.5" y1="12" x2="5.5" y2="12" />
+    <line x1="18.5" y1="12" x2="21.5" y2="12" />
+  </svg>
+);
+
+const MagnifierIcon = ({ className }: { className?: string }) => (
+  <svg
+    className={className}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <circle cx="11" cy="11" r="6.5" />
+    <line x1="16.2" y1="16.2" x2="21.5" y2="21.5" />
+  </svg>
+);
 
 function App() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -92,6 +127,7 @@ function App() {
   const [inputText, setInputText] = useState('');
   const [activeTab, setActiveTab] = useState<'summary' | 'chat' | 'headings'>('summary');
   const [selectionMode, setSelectionMode] = useState(false);
+  const [magnifyingMode, setMagnifyingMode] = useState(false);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [currentUrl, setCurrentUrl] = useState<string>('');
   const [pageId, setPageId] = useState<string>('');
@@ -166,14 +202,26 @@ function App() {
     getCurrentUrl();
 
     // Listen for messages from content script
-    const handleMessage = (message: any) => {
+    const handleMessage = (message: any, sender: any, sendResponse: any) => {
       console.log('[Sidepanel] Received message:', message);
+      if (message.type === 'CAPTURE_VISIBLE_TAB') {
+        const windowId = sender?.tab?.windowId ?? browser.windows.WINDOW_ID_CURRENT;
+        browser.tabs.captureVisibleTab(windowId, { format: 'png' })
+          .then((dataUrl) => sendResponse({ ok: true, dataUrl }))
+          .catch((error) => {
+            console.error('[Sidepanel] captureVisibleTab failed:', error);
+            sendResponse({ ok: false });
+          });
+        return true;
+      }
       if (message.type === 'ELEMENT_CLICKED') {
         // Switch to chat tab if openChat flag is set
         if (message.openChat) {
           setActiveTab('chat');
         }
         handleElementClick(message.data);
+      } else if (message.type === 'MAGNIFYING_MODE_CHANGED') {
+        setMagnifyingMode(message.enabled);
       } else if (message.type === 'PAGE_LOADED') {
         console.log('[Sidepanel] Page loaded data:', message.data);
         console.log('[Sidepanel] Headings received:', message.data.headings);
@@ -501,6 +549,22 @@ function App() {
       }
     } catch (error) {
       console.error('[Sidepanel] Failed to toggle selection mode:', error);
+    }
+  };
+
+  const toggleMagnifyingMode = async () => {
+    const nextEnabled = !magnifyingMode;
+    setMagnifyingMode(nextEnabled);
+    try {
+      const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+      if (tabs[0]?.id) {
+        browser.tabs.sendMessage(tabs[0].id, {
+          type: 'TOGGLE_MAGNIFYING_MODE',
+          enabled: nextEnabled,
+        });
+      }
+    } catch (error) {
+      console.error('[Sidepanel] Failed to toggle magnifying mode:', error);
     }
   };
 
@@ -887,19 +951,32 @@ function App() {
             </div>
 
             {/* Other Controls */}
-            <button
-              onClick={toggleSelectionMode}
-              className={`w-full flex items-center justify-center gap-2 p-3 rounded-lg transition-colors ${
-                selectionMode
-                  ? 'bg-yellow-100 hover:bg-yellow-200 ring-2 ring-yellow-400'
-                  : 'bg-yellow-50 hover:bg-yellow-100'
-              }`}
-            >
-              <span className="text-2xl">🎯</span>
-              <span className="text-sm font-medium text-gray-700">
-                {selectionMode ? 'Selection ON' : 'Selection OFF'}
-              </span>
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={toggleSelectionMode}
+                className={`flex-1 flex items-center justify-center gap-2 p-2 rounded-lg transition-colors ${
+                  selectionMode
+                    ? 'bg-yellow-100 hover:bg-yellow-200 ring-2 ring-yellow-400'
+                    : 'bg-yellow-50 hover:bg-yellow-100'
+                }`}
+              >
+                <SelectionIcon className="w-5 h-5 text-yellow-700" />
+                <span className="text-xs font-medium text-gray-700">
+                  {selectionMode ? 'Selection ON' : 'Selection OFF'}
+                </span>
+              </button>
+              <button
+                onClick={toggleMagnifyingMode}
+                className={`w-12 h-10 flex items-center justify-center rounded-lg transition-colors ${
+                  magnifyingMode
+                    ? 'bg-blue-100 hover:bg-blue-200 ring-2 ring-blue-400'
+                    : 'bg-gray-100 hover:bg-gray-200'
+                }`}
+                title="Toggle magnifying glass"
+              >
+                <MagnifierIcon className="w-5 h-5 text-blue-700" />
+              </button>
+            </div>
           </div>
         </>
       ) : activeTab === 'headings' ? (
@@ -984,19 +1061,32 @@ function App() {
             </div>
 
             {/* Other Controls */}
-            <button
-              onClick={toggleSelectionMode}
-              className={`w-full flex items-center justify-center gap-2 p-3 rounded-lg transition-colors ${
-                selectionMode
-                  ? 'bg-yellow-100 hover:bg-yellow-200 ring-2 ring-yellow-400'
-                  : 'bg-yellow-50 hover:bg-yellow-100'
-              }`}
-            >
-              <span className="text-2xl">🎯</span>
-              <span className="text-sm font-medium text-gray-700">
-                {selectionMode ? 'Selection ON' : 'Selection OFF'}
-              </span>
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={toggleSelectionMode}
+                className={`flex-1 flex items-center justify-center gap-2 p-2 rounded-lg transition-colors ${
+                  selectionMode
+                    ? 'bg-yellow-100 hover:bg-yellow-200 ring-2 ring-yellow-400'
+                    : 'bg-yellow-50 hover:bg-yellow-100'
+                }`}
+              >
+                <SelectionIcon className="w-5 h-5 text-yellow-700" />
+                <span className="text-xs font-medium text-gray-700">
+                  {selectionMode ? 'Selection ON' : 'Selection OFF'}
+                </span>
+              </button>
+              <button
+                onClick={toggleMagnifyingMode}
+                className={`w-12 h-10 flex items-center justify-center rounded-lg transition-colors ${
+                  magnifyingMode
+                    ? 'bg-blue-100 hover:bg-blue-200 ring-2 ring-blue-400'
+                    : 'bg-gray-100 hover:bg-gray-200'
+                }`}
+                title="Toggle magnifying glass"
+              >
+                <MagnifierIcon className="w-5 h-5 text-blue-700" />
+              </button>
+            </div>
           </div>
         </>
       ) : (
@@ -1169,19 +1259,32 @@ function App() {
             </div>
 
             {/* Selection Mode Button */}
-            <button
-              onClick={toggleSelectionMode}
-              className={`w-full flex items-center justify-center gap-2 p-3 rounded-lg transition-colors ${
-                selectionMode
-                  ? 'bg-yellow-100 hover:bg-yellow-200 ring-2 ring-yellow-400'
-                  : 'bg-yellow-50 hover:bg-yellow-100'
-              }`}
-            >
-              <span className="text-2xl">🎯</span>
-              <span className="text-sm font-medium text-gray-700">
-                {selectionMode ? 'Selection ON' : 'Selection OFF'}
-              </span>
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={toggleSelectionMode}
+                className={`flex-1 flex items-center justify-center gap-2 p-2 rounded-lg transition-colors ${
+                  selectionMode
+                    ? 'bg-yellow-100 hover:bg-yellow-200 ring-2 ring-yellow-400'
+                    : 'bg-yellow-50 hover:bg-yellow-100'
+                }`}
+              >
+                <SelectionIcon className="w-5 h-5 text-yellow-700" />
+                <span className="text-xs font-medium text-gray-700">
+                  {selectionMode ? 'Selection ON' : 'Selection OFF'}
+                </span>
+              </button>
+              <button
+                onClick={toggleMagnifyingMode}
+                className={`w-12 h-10 flex items-center justify-center rounded-lg transition-colors ${
+                  magnifyingMode
+                    ? 'bg-blue-100 hover:bg-blue-200 ring-2 ring-blue-400'
+                    : 'bg-gray-100 hover:bg-gray-200'
+                }`}
+                title="Toggle magnifying glass"
+              >
+                <MagnifierIcon className="w-5 h-5 text-blue-700" />
+              </button>
+            </div>
           </div>
         </>
       )}

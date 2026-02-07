@@ -7,7 +7,7 @@ export default defineConfig({
   manifest: {
     name: "ClearWeb",
     description: "Make the web easier to read and understand with AI-powered summaries and chat",
-    permissions: ["storage"],
+    permissions: ["storage", "tabs", "activeTab"],
   },
   vite: () =>
     ({
