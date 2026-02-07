@@ -40,7 +40,7 @@
 2. **Set Environment Variables**
    ```bash
    DATABASE_TYPE=mongodb
-   MONGODB_URL=${{MongoDB.MONGO_URL}}
+   MONGO_URL=${{MongoDB.MONGO_URL}}
    OPENAI_API_KEY=your-key-here
    ```
 
@@ -53,7 +53,7 @@
 ```bash
 # .env
 DATABASE_TYPE=mongodb
-MONGODB_URL=mongodb+srv://user:pass@cluster.mongodb.net/clearweb
+MONGO_URL=mongodb+srv://user:pass@cluster.mongodb.net/clearweb
 OPENAI_API_KEY=your-key-here
 ```
 

@@ -59,8 +59,22 @@ def scrap(req: ScrapRequest):
 def simplify(req: SimplifyRequest):
     """Simplify a webpage with intelligent summary and optional checklist."""
     db = _get_db()
-    page = scrape_url(str(req.url), db, session_id=req.session_id)
-    # print("Scraped page:", page["page_id"], page["url"])
+
+    # Check database first to avoid unnecessary scraping
+    page_id = page_id_for_url(str(req.url))
+    page = None
+
+    if not req.force_regen:
+        page = db.get_page(page_id=page_id)
+        if page:
+            # Add page_id back to the dict since MongoDB stores it as _id
+            page["page_id"] = page_id
+            print(f"Using cached page: {page_id}")
+
+    # Scrape only if page not found in database or force_regen is True
+    if page is None:
+        page = scrape_url(str(req.url), db, session_id=req.session_id)
+        print(f"Scraped new page: {page_id}")
 
     title = (page["meta"] or {}).get("title")
     source_hash = page["source_text_hash"]

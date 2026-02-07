@@ -31,7 +31,7 @@ def get_database(db_type: DatabaseType = None) -> DatabaseInterface:
             - USE_MOCK_FIREBASE: "true" to use mock (local dev)
 
         For MongoDB:
-            - MONGODB_URL: MongoDB connection string (required)
+            - MONGO_URL: MongoDB connection string (required)
     """
     if db_type is None:
         db_type = os.getenv("DATABASE_TYPE", "firebase").lower()

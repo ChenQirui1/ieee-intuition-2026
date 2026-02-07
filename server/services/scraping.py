@@ -22,7 +22,7 @@ def _safe_trim_blocks(blocks, max_blocks: int = 200, max_total_chars: int = 80_0
     trimmed = []
     total = 0
     for b in blocks[:max_blocks]:
-        item = b.model_dump() if hasattr(b, "model_dump") else b
+        item = b.model_dump(mode="json") if hasattr(b, "model_dump") else b
         s = str(item)
         if total + len(s) > max_total_chars:
             break
@@ -87,22 +87,26 @@ def scrape_url(url: str, db, session_id: str = None) -> Dict[str, Any]:
 
     blocks_trim = _safe_trim_blocks(blocks)
     blocks_data = [
-        b.model_dump() if hasattr(b, "model_dump") else b for b in blocks_trim
+        b.model_dump(mode="json") if hasattr(b, "model_dump") else b
+        for b in blocks_trim
     ]
     links_data = [
-        l.model_dump() if hasattr(l, "model_dump") else l for l in (links or [])
+        l.model_dump(mode="json") if hasattr(l, "model_dump") else l
+        for l in (links or [])
     ][:40]
     images_data = [
-        i.model_dump() if hasattr(i, "model_dump") else i for i in (images or [])
+        i.model_dump(mode="json") if hasattr(i, "model_dump") else i
+        for i in (images or [])
     ][:20]
 
     source_text = blocks_to_text(blocks_data)
     source_text_hash = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
 
     # Convert meta to dict for database compatibility
-    meta_dict = meta.model_dump() if hasattr(meta, "model_dump") else meta
+    meta_dict = meta.model_dump(mode="json") if hasattr(meta, "model_dump") else meta
 
     pid = page_id_for_url(url)
+
     db.save_page(
         page_id=pid,
         url=url,

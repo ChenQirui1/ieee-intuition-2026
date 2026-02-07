@@ -25,13 +25,13 @@ class MongoDatabase(DatabaseInterface):
 
         Args:
             connection_string: MongoDB connection string. If not provided,
-                             reads from MONGODB_URL environment variable.
+                             reads from MONGO_URL environment variable.
         """
-        self.connection_string = connection_string or os.getenv("MONGODB_URL")
+        self.connection_string = connection_string or os.getenv("MONGO_URL")
 
         if not self.connection_string:
             raise RuntimeError(
-                "MongoDB connection string not found. Set MONGODB_URL environment variable "
+                "MongoDB connection string not found. Set MONGO_URL environment variable "
                 "or pass connection_string parameter."
             )
 
