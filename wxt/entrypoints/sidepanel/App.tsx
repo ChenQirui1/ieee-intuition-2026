@@ -1,13 +1,45 @@
 import { useState, useEffect, useRef } from 'react';
 import { browser } from 'wxt/browser';
 import { storage } from '@wxt-dev/storage';
-import { simplifyPage, sendTextCompletion } from './api';
+import { simplifyPage, sendImageCaption, sendTextCompletion } from './api';
+import { useTts } from './useTts';
 
 interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
+}
+
+function coerceDate(value: unknown): Date {
+  if (value instanceof Date) return value;
+
+  const date = new Date(
+    typeof value === 'string' || typeof value === 'number' ? value : Date.now(),
+  );
+  return Number.isNaN(date.getTime()) ? new Date() : date;
+}
+
+function normalizeStoredMessages(raw: unknown): Message[] {
+  if (!Array.isArray(raw)) return [];
+
+  return raw
+    .filter((m) => m && typeof m === 'object')
+    .map((m: any, idx: number) => ({
+      id: typeof m.id === 'string' && m.id ? m.id : `${Date.now()}_${idx}`,
+      role: m.role === 'user' ? 'user' : 'assistant',
+      content: typeof m.content === 'string' ? m.content : String(m.content ?? ''),
+      timestamp: coerceDate(m.timestamp),
+    }));
+}
+
+function formatTimestamp(value: unknown): string {
+  const date = coerceDate(value);
+  try {
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  } catch {
+    return '';
+  }
 }
 
 interface PageSummary {
@@ -28,9 +60,30 @@ interface UserPreferences {
   hideAds: boolean;
   simplifyLanguage: boolean;
   showBreadcrumbs: boolean;
+  ttsRate: number;
+  autoReadAssistant: boolean;
   profileName: string;
 }
 
+const DEFAULT_USER_PREFERENCES: UserPreferences = {
+  fontSize: 'standard',
+  linkStyle: 'default',
+  contrastMode: 'standard',
+  hideAds: false,
+  simplifyLanguage: false,
+  showBreadcrumbs: false,
+  ttsRate: 1,
+  autoReadAssistant: false,
+  profileName: 'My Profile',
+};
+
+const SUPPORTED_TTS_RATES = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
+
+function coerceTtsRate(value: unknown): number {
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n)) return DEFAULT_USER_PREFERENCES.ttsRate;
+  return SUPPORTED_TTS_RATES.includes(n as any) ? n : DEFAULT_USER_PREFERENCES.ttsRate;
+}
 const SelectionIcon = ({ className }: { className?: string }) => (
   <svg
     className={className}
@@ -83,6 +136,30 @@ function App() {
   const [error, setError] = useState<string>('');
   const [backendStatus, setBackendStatus] = useState<'unknown' | 'connected' | 'disconnected'>('unknown');
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const tts = useTts();
+
+  const [ttsTarget, setTtsTarget] = useState<
+    | { kind: 'summary' }
+    | { kind: 'headings' }
+    | { kind: 'chat'; id: string }
+    | null
+  >(null);
+
+  const [autoReadAssistantReplies, setAutoReadAssistantReplies] = useState<boolean>(
+    DEFAULT_USER_PREFERENCES.autoReadAssistant,
+  );
+
+  useEffect(() => {
+    if (tts.status === 'idle') {
+      setTtsTarget(null);
+    }
+  }, [tts.status]);
+
+  // Keep audio output scoped to the current view.
+  useEffect(() => {
+    tts.stop();
+    setTtsTarget(null);
+  }, [activeTab]);
 
   useEffect(() => {
     // Initialize session ID
@@ -111,16 +188,16 @@ function App() {
           if (cachedPageId) setPageId(cachedPageId);
           if (cachedSimplId) setSimplificationId(cachedSimplId);
 
-          // Load chat messages for this URL
-          const savedMessages = await storage.getItem<Message[]>(`local:chatMessages:${tabs[0].url}`);
-          if (savedMessages && Array.isArray(savedMessages)) {
-            console.log('[Sidepanel] Loaded saved messages:', savedMessages.length);
-            setMessages(savedMessages);
-          }
-        }
-      } catch (error) {
-        console.error('[Sidepanel] Failed to get current URL:', error);
-      }
+           // Load chat messages for this URL
+           const savedMessages = await storage.getItem<Message[]>(`local:chatMessages:${tabs[0].url}`);
+           if (savedMessages && Array.isArray(savedMessages)) {
+             console.log('[Sidepanel] Loaded saved messages:', savedMessages.length);
+            setMessages(normalizeStoredMessages(savedMessages));
+           }
+         }
+       } catch (error) {
+         console.error('[Sidepanel] Failed to get current URL:', error);
+       }
     };
     getCurrentUrl();
 
@@ -169,16 +246,20 @@ function App() {
   const loadPreferences = async () => {
     try {
       const preferences = await storage.getItem<UserPreferences>('sync:userPreferences');
-      if (preferences) {
-        applyZoom(preferences.fontSize);
+      applyZoom(preferences?.fontSize ?? DEFAULT_USER_PREFERENCES.fontSize);
+      tts.setRate(coerceTtsRate(preferences?.ttsRate));
+      setAutoReadAssistantReplies(
+        preferences?.autoReadAssistant ?? DEFAULT_USER_PREFERENCES.autoReadAssistant,
+      );
 
-        // Watch for preference changes
-        storage.watch<UserPreferences>('sync:userPreferences', (newPreferences) => {
-          if (newPreferences) {
-            applyZoom(newPreferences.fontSize);
-          }
-        });
-      }
+      // Watch for preference changes (even if preferences aren't set yet).
+      storage.watch<UserPreferences>('sync:userPreferences', (newPreferences) => {
+        applyZoom(newPreferences?.fontSize ?? DEFAULT_USER_PREFERENCES.fontSize);
+        tts.setRate(coerceTtsRate(newPreferences?.ttsRate));
+        setAutoReadAssistantReplies(
+          newPreferences?.autoReadAssistant ?? DEFAULT_USER_PREFERENCES.autoReadAssistant,
+        );
+      });
     } catch (error) {
       console.error('[Sidepanel] Failed to load preferences:', error);
     }
@@ -194,16 +275,34 @@ function App() {
     }
   };
 
+  const applyPreferencesToActiveTab = async (preferences: UserPreferences) => {
+    try {
+      const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+      const tabId = tabs[0]?.id;
+      if (!tabId) return;
+
+      await browser.tabs.sendMessage(tabId, {
+        type: 'APPLY_USER_PREFERENCES',
+        preferences,
+      });
+    } catch {
+      // Content script may not be ready (or not allowed on this page); storage watch still covers most cases.
+    }
+  };
+
   const handleZoomChange = async (fontSize: 'standard' | 'large' | 'extra-large') => {
     try {
       // Load current preferences
       const preferences = await storage.getItem<UserPreferences>('sync:userPreferences');
-      if (preferences) {
-        // Update fontSize and save
-        const updatedPreferences = { ...preferences, fontSize };
-        await storage.setItem('sync:userPreferences', updatedPreferences);
-        applyZoom(fontSize);
-      }
+      // Update fontSize and save (create defaults if missing so zoom works even without onboarding).
+      const updatedPreferences: UserPreferences = {
+        ...DEFAULT_USER_PREFERENCES,
+        ...((preferences ?? {}) as Partial<UserPreferences>),
+        fontSize,
+      };
+      await storage.setItem('sync:userPreferences', updatedPreferences);
+      applyZoom(fontSize);
+      await applyPreferencesToActiveTab(updatedPreferences);
     } catch (error) {
       console.error('[Sidepanel] Failed to update zoom:', error);
     }
@@ -310,7 +409,63 @@ function App() {
   };
 
   const handleElementClick = async (elementData: any) => {
-    const { text, tag } = elementData;
+    const { text, tag, src, alt, figcaption } = elementData;
+
+    // Images often have no textContent, so handle them separately.
+    if (tag === 'img') {
+      const imageUrl = typeof src === 'string' ? src.trim() : '';
+      if (!imageUrl) return;
+
+      const hintText = (alt || figcaption || '').trim();
+      const userPrompt = 'Describe this image.';
+
+      const userMessage: Message = {
+        id: Date.now().toString(),
+        role: 'user',
+        content: userPrompt,
+        timestamp: new Date(),
+      };
+      const updatedMessages = [...messages, userMessage];
+      setMessages(updatedMessages);
+      await storage.setItem(`local:chatMessages:${currentUrl}`, updatedMessages);
+
+      setIsLoading(true);
+      setError('');
+      try {
+        const response = await sendImageCaption(imageUrl, {
+          altText: hintText || undefined,
+          language: 'en',
+        });
+
+        const assistantMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: response.caption,
+          timestamp: new Date(),
+        };
+        const finalMessages = [...updatedMessages, assistantMessage];
+        setMessages(finalMessages);
+        await storage.setItem(`local:chatMessages:${currentUrl}`, finalMessages);
+        maybeAutoReadAssistantReply(assistantMessage);
+      } catch (error) {
+        console.error('[Sidepanel] Failed to caption image:', error);
+        setError(error instanceof Error ? error.message : 'Failed to caption image');
+
+        const errorMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: 'Sorry, I could not caption that image. Please make sure the backend server is running.',
+          timestamp: new Date(),
+        };
+        const finalMessages = [...updatedMessages, errorMessage];
+        setMessages(finalMessages);
+        await storage.setItem(`local:chatMessages:${currentUrl}`, finalMessages);
+        maybeAutoReadAssistantReply(errorMessage);
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
 
     if (!text || text.trim().length === 0) {
       return;
@@ -362,6 +517,7 @@ function App() {
 
       // Save to local storage
       await storage.setItem(`local:chatMessages:${currentUrl}`, finalMessages);
+      maybeAutoReadAssistantReply(assistantMessage);
     } catch (error) {
       console.error('[Sidepanel] Failed to get AI response:', error);
       setError(error instanceof Error ? error.message : 'Failed to get response');
@@ -375,6 +531,7 @@ function App() {
       const finalMessages = [...updatedMessages, errorMessage];
       setMessages(finalMessages);
       await storage.setItem(`local:chatMessages:${currentUrl}`, finalMessages);
+      maybeAutoReadAssistantReply(errorMessage);
     } finally {
       setIsLoading(false);
     }
@@ -487,6 +644,7 @@ function App() {
 
       // Save to local storage
       await storage.setItem(`local:chatMessages:${currentUrl}`, finalMessages);
+      maybeAutoReadAssistantReply(assistantMessage);
     } catch (error) {
       console.error('[Sidepanel] Failed to get AI response:', error);
       setError(error instanceof Error ? error.message : 'Failed to get response');
@@ -500,6 +658,7 @@ function App() {
       const finalMessages = [...updatedMessages, errorMessage];
       setMessages(finalMessages);
       await storage.setItem(`local:chatMessages:${currentUrl}`, finalMessages);
+      maybeAutoReadAssistantReply(errorMessage);
     } finally {
       setIsLoading(false);
     }
@@ -517,6 +676,115 @@ function App() {
     } catch (error) {
       console.error('[Sidepanel] Failed to scroll to heading:', error);
     }
+  };
+
+  const startSummarySpeech = () => {
+    if (!tts.isSupported) return;
+    const bullets = summary?.bullets ?? [];
+    if (!bullets.length) return;
+    const ok = tts.speak(bullets);
+    if (ok) setTtsTarget({ kind: 'summary' });
+  };
+
+  const startHeadingsSpeech = () => {
+    if (!tts.isSupported) return;
+    if (!headings.length) return;
+    const ok = tts.speak(headings.map((h) => h.text));
+    if (ok) setTtsTarget({ kind: 'headings' });
+  };
+
+  const startChatMessageSpeech = (message: Message) => {
+    if (!tts.isSupported) return;
+    const content = typeof message.content === 'string' ? message.content.trim() : '';
+    if (!content) return;
+    const ok = tts.speak(content);
+    if (ok) setTtsTarget({ kind: 'chat', id: message.id });
+  };
+
+  const maybeAutoReadAssistantReply = (message: Message) => {
+    if (!autoReadAssistantReplies) return;
+    if (!tts.isSupported) return;
+    if (activeTab !== 'chat') return;
+    if (message.role !== 'assistant') return;
+    if (tts.status !== 'idle') return; // Don't interrupt manual playback.
+    const content = typeof message.content === 'string' ? message.content.trim() : '';
+    if (!content) return;
+    const ok = tts.speak(content);
+    if (ok) setTtsTarget({ kind: 'chat', id: message.id });
+  };
+
+  const renderTopSpeakerControls = (kind: 'summary' | 'headings') => {
+    const isActive = ttsTarget?.kind === kind && tts.status !== 'idle';
+    const canStart =
+      kind === 'summary'
+        ? !!summary?.bullets?.length
+        : headings.length > 0;
+
+    const label =
+      kind === 'summary'
+        ? 'Listen to summary'
+        : 'Listen to headings';
+
+    const onStart =
+      kind === 'summary'
+        ? startSummarySpeech
+        : startHeadingsSpeech;
+
+    if (!tts.isSupported) {
+      return (
+        <button
+          type="button"
+          disabled
+          className="p-2 rounded-lg border border-gray-200 bg-white text-gray-400 shadow-sm cursor-not-allowed"
+          title="Text-to-speech is not supported"
+          aria-label="Text-to-speech is not supported"
+        >
+          <SpeakerWaveIcon className="w-5 h-5" />
+        </button>
+      );
+    }
+
+    if (!isActive) {
+      return (
+        <button
+          type="button"
+          onClick={onStart}
+          disabled={!canStart}
+          className="p-2 rounded-lg border border-gray-200 bg-white text-gray-700 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          title={label}
+          aria-label={label}
+        >
+          <SpeakerWaveIcon className="w-5 h-5" />
+        </button>
+      );
+    }
+
+    return (
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => (tts.status === 'speaking' ? tts.pause() : tts.resume())}
+          className="p-2 rounded-lg border border-gray-200 bg-white text-gray-800 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
+          title={tts.status === 'speaking' ? 'Pause' : 'Play'}
+          aria-label={tts.status === 'speaking' ? 'Pause' : 'Play'}
+        >
+          {tts.status === 'speaking' ? (
+            <PauseIcon className="w-5 h-5" />
+          ) : (
+            <PlayIcon className="w-5 h-5" />
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={tts.stop}
+          className="p-2 rounded-lg border border-gray-200 bg-white text-gray-800 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
+          title="Stop"
+          aria-label="Stop"
+        >
+          <StopIcon className="w-5 h-5" />
+        </button>
+      </div>
+    );
   };
 
   return (
@@ -579,10 +847,22 @@ function App() {
         /* Summary Tab */
         <>
           <div className="flex-1 overflow-y-auto p-6">
-            <h2 className="text-3xl font-bold text-gray-800 mb-4 flex items-center gap-2">
-              <span className="text-4xl">💡</span>
-              In short...
-            </h2>
+            <div className="flex items-start justify-between gap-3 mb-4">
+              <h2 className="text-3xl font-bold text-gray-800 flex items-center gap-2">
+                <span className="text-4xl">💡</span>
+                In short...
+              </h2>
+              <div className="flex flex-col items-end gap-2 shrink-0">
+                <button
+                  onClick={requestPageSummary}
+                  disabled={isLoading}
+                  className="px-4 py-2 text-sm font-semibold bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors shadow-sm"
+                >
+                  🔄 Refresh
+                </button>
+                {renderTopSpeakerControls('summary')}
+              </div>
+            </div>
             {isLoading && !summary ? (
               <div className="space-y-3">
                 <div className="h-4 bg-gray-300 rounded animate-pulse"></div>
@@ -703,17 +983,21 @@ function App() {
         /* Headings Tab */
         <>
           <div className="flex-1 overflow-y-auto p-6">
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-start justify-between mb-4 gap-3">
               <h2 className="text-3xl font-bold text-gray-800 flex items-center gap-2">
                 <span className="text-4xl">📑</span>
                 Table of Contents
               </h2>
-              <button
-                onClick={requestPageSummary}
-                className="px-3 py-1 text-base bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-              >
-                🔄 Refresh
-              </button>
+              <div className="flex flex-col items-end gap-2 shrink-0">
+                <button
+                  onClick={requestPageSummary}
+                  disabled={isLoading}
+                  className="px-4 py-2 text-sm font-semibold bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors shadow-sm"
+                >
+                  🔄 Refresh
+                </button>
+                {renderTopSpeakerControls('headings')}
+              </div>
             </div>
             {headings.length === 0 ? (
               <div className="text-gray-500 text-lg">
@@ -825,36 +1109,87 @@ function App() {
                   />
                 </svg>
                 <p className="text-base font-medium mb-1">No conversation yet</p>
-                <p className="text-sm">Click on paragraphs or text on the page to start</p>
+                <p className="text-sm">Click on text or images on the page to start</p>
               </div>
             ) : (
               <>
-                {messages.map((message) => (
-                  <div
-                    key={message.id}
-                    className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                  >
+                {messages.map((message) => {
+                 const isAssistant = message.role === 'assistant';
+                  const isActive =
+                    isAssistant
+                    && ttsTarget?.kind === 'chat'
+                    && ttsTarget.id === message.id
+                    && tts.status !== 'idle';
+                  const safeContent = typeof message.content === 'string' ? message.content : String((message as any)?.content ?? '');
+                  const canSpeak = tts.isSupported && !!safeContent.trim();
+                  const timeLabel = formatTimestamp((message as any)?.timestamp ?? message.timestamp);
+
+                  return (
                     <div
-                      className={`max-w-[85%] rounded-lg px-4 py-3 ${
-                        message.role === 'user'
-                          ? 'bg-blue-600 text-white'
-                          : 'bg-white text-gray-900 shadow-md border border-gray-200'
-                      }`}
+                      key={message.id}
+                      className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
                     >
-                      <p className="text-base leading-relaxed">{message.content}</p>
-                      <p
-                        className={`text-xs mt-1 ${
-                          message.role === 'user' ? 'text-blue-100' : 'text-gray-500'
-                        }`}
+                      <div
+                        className={`max-w-[85%] rounded-lg px-4 py-3 relative ${
+                          message.role === 'user'
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-white text-gray-900 shadow-md border border-gray-200'
+                        } ${isAssistant ? 'pr-12' : ''}`}
                       >
-                        {message.timestamp.toLocaleTimeString([], {
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })}
-                      </p>
+                        <p className="text-base leading-relaxed break-words">{message.content}</p>
+                        <p
+                          className={`text-xs mt-1 ${
+                            message.role === 'user' ? 'text-blue-100' : 'text-gray-500'
+                          }`}
+                        >
+                          {timeLabel}
+                        </p>
+
+                        {isAssistant && (
+                          <div className="absolute top-2 right-2 flex flex-col items-center gap-2">
+                            {!isActive ? (
+                              <button
+                                type="button"
+                                onClick={() => startChatMessageSpeech(message)}
+                                disabled={!canSpeak}
+                                className="p-2 rounded-lg border border-gray-200 bg-white text-gray-700 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                title="Listen"
+                                aria-label="Listen"
+                              >
+                                <SpeakerWaveIcon className="w-5 h-5" />
+                              </button>
+                            ) : (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => (tts.status === 'speaking' ? tts.pause() : tts.resume())}
+                                  className="p-2 rounded-lg border border-gray-200 bg-white text-gray-800 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
+                                  title={tts.status === 'speaking' ? 'Pause' : 'Play'}
+                                  aria-label={tts.status === 'speaking' ? 'Pause' : 'Play'}
+                                >
+                                  {tts.status === 'speaking' ? (
+                                    <PauseIcon className="w-5 h-5" />
+                                  ) : (
+                                    <PlayIcon className="w-5 h-5" />
+                                  )}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={tts.stop}
+                                  className="p-2 rounded-lg border border-gray-200 bg-white text-gray-800 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
+                                  title="Stop"
+                                  aria-label="Stop"
+                                >
+                                  <StopIcon className="w-5 h-5" />
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
                 {isLoading && (
                   <div className="flex justify-start">
                     <div className="bg-white text-gray-900 shadow-md border border-gray-200 rounded-lg px-4 py-3">
@@ -958,3 +1293,61 @@ function App() {
 }
 
 export default App;
+
+function SpeakerWaveIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M11 5L6 9H2v6h4l5 4V5z" />
+      <path d="M15.5 8.5a4 4 0 010 7" />
+      <path d="M18.5 5.5a8 8 0 010 13" />
+    </svg>
+  );
+}
+
+function PlayIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M8 5v14l12-7-12-7z" />
+    </svg>
+  );
+}
+
+function PauseIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M6 5h4v14H6zM14 5h4v14h-4z" />
+    </svg>
+  );
+}
+
+function StopIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M6 6h12v12H6z" />
+    </svg>
+  );
+}
