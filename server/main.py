@@ -806,7 +806,7 @@ def chat(req: ChatRequest):
 @app.get("/firestore-test")
 def firestore_test():
     ref = db.collection("audits").document("test-doc")
-    ref.set({"hello": "world"})
+    ref.set({"hi": "world"})
     return {"ok": True, "id": "test-doc"}
 
 
