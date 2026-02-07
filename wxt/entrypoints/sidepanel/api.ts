@@ -8,12 +8,14 @@
 // Local development (uncomment for local testing)
 const API_BASE_URL = 'http://127.0.0.1:8000';
 
+export type LanguageCode = 'en' | 'zh' | 'ms' | 'ta';
+
 export interface SimplifyResponse {
   ok: boolean;
   url: string;
   page_id: string;
   source_text_hash: string;
-  language: 'en' | 'zh' | 'ms' | 'ta';
+  language: LanguageCode;
   model: string;
   outputs: {
     easy_read?: {
@@ -63,7 +65,7 @@ export interface ChatResponse {
 export async function simplifyPage(
   url: string,
   mode: 'easy_read' | 'checklist' | 'step_by_step' | 'all' = 'all',
-  language: 'en' | 'zh' | 'ms' | 'ta' = 'en',
+  language: LanguageCode = 'en',
   sessionId?: string,
   forceRegen: boolean = false
 ): Promise<SimplifyResponse> {
@@ -111,7 +113,7 @@ export async function sendChatMessage(
   options: {
     pageId?: string;
     mode?: 'easy_read' | 'checklist' | 'step_by_step';
-    language?: 'en' | 'zh' | 'ms' | 'ta';
+    language?: LanguageCode;
     simplificationId?: string;
     sectionId?: string;
     sectionText?: string;
@@ -150,9 +152,29 @@ export async function sendChatMessage(
  */
 export async function sendTextCompletion(
   text: string,
-  temperature: number = 0.7
+  options: { temperature?: number; language?: LanguageCode } = {}
 ): Promise<{ ok: boolean; model: string; response: string }> {
+  const temperature = options.temperature ?? 0.7;
+  const language = options.language;
+
   console.log('[API] Calling /text-completion with text:', text.substring(0, 100));
+
+  const languageSystemPrompt = (() => {
+    if (!language) return null;
+    if (language === 'en') {
+      return 'Reply in English.';
+    }
+    if (language === 'zh') {
+      return 'Reply in Simplified Chinese only. Do not reply in English.';
+    }
+    if (language === 'ms') {
+      return 'Reply in Malay (Bahasa Melayu) only. Do not reply in English.';
+    }
+    if (language === 'ta') {
+      return 'Reply in Tamil only. Do not reply in English.';
+    }
+    return null;
+  })();
 
   const response = await fetch(`${API_BASE_URL}/text-completion`, {
     method: 'POST',
@@ -160,7 +182,14 @@ export async function sendTextCompletion(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      text,
+      ...(languageSystemPrompt
+        ? {
+            messages: [
+              { role: 'system', content: languageSystemPrompt },
+              { role: 'user', content: text },
+            ],
+          }
+        : { text }),
       temperature,
     }),
   });
@@ -186,7 +215,7 @@ export async function sendImageCaption(
   imageUrl: string,
   options: {
     altText?: string;
-    language?: 'en' | 'zh' | 'ms' | 'ta';
+    language?: LanguageCode;
   } = {}
 ): Promise<{ ok: boolean; model: string; caption: string }> {
   const response = await fetch(`${API_BASE_URL}/image-caption`, {
