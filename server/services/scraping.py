@@ -99,11 +99,14 @@ def scrape_url(url: str, db, session_id: str = None) -> Dict[str, Any]:
     source_text = blocks_to_text(blocks_data)
     source_text_hash = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
 
+    # Convert meta to dict for database compatibility
+    meta_dict = meta.model_dump() if hasattr(meta, "model_dump") else meta
+
     pid = page_id_for_url(url)
     db.save_page(
         page_id=pid,
         url=url,
-        meta=meta,
+        meta=meta_dict,
         blocks=blocks_data,
         links=links_data,
         images=images_data,

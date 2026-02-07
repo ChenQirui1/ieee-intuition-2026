@@ -1,7 +1,7 @@
 """API routes for scraping, simplification, and chat endpoints."""
 
 import json
-from typing import Any, Dict, List
+from typing import Dict, List
 
 from fastapi import APIRouter, HTTPException
 
@@ -17,7 +17,7 @@ from database.interface import page_id_for_url, simplification_id_for
 from services.scraping import scrape_url
 from services.simplification import (
     pick_important_links,
-    generate_mode_output_validated,
+    generate_simplification,
     extract_best_context,
 )
 from utils.openai_client import call_openai_chat, get_openai_model
@@ -30,6 +30,7 @@ router = APIRouter()
 def _get_db():
     """Get database instance (imported at module level to avoid circular imports)."""
     from main import db
+
     return db
 
 
@@ -50,7 +51,7 @@ def scrap(req: ScrapRequest):
 
 @router.post("/simplify", response_model=SimplifyResponse)
 def simplify(req: SimplifyRequest):
-    """Simplify a webpage into accessible formats."""
+    """Simplify a webpage with intelligent summary and optional checklist."""
     db = _get_db()
     page = scrape_url(str(req.url), db, session_id=req.session_id)
     print("Scraped page:", page["page_id"], page["url"])
@@ -61,61 +62,53 @@ def simplify(req: SimplifyRequest):
 
     important_links = pick_important_links(page["links"])
 
-    wanted_modes = ["easy_read", "checklist", "step_by_step"]
-    if req.mode != "all":
-        wanted_modes = [req.mode]
+    # Check cache (single simplification per language/hash)
+    cache_key = f"{page['url']}|{lang}|{source_hash}"
+    sid = simplification_id_for(
+        url=page["url"],
+        mode="intelligent",  # New unified mode
+        language=lang,
+        source_text_hash=source_hash,
+    )
 
-    outputs: Dict[str, Any] = {}
-    simpl_ids: Dict[str, str] = {}
-    model_used_any = get_openai_model()
+    output = None
+    model_used = get_openai_model()
 
-    for mode in wanted_modes:
-        if not req.force_regen:
-            cached = db.find_simplification(
-                url=page["url"],
-                mode=mode,
-                language=lang,
-                source_text_hash=source_hash,
-            )
-            if cached and cached.get("output"):
-                outputs[mode] = cached["output"]
-                simpl_ids[mode] = cached.get("_id", "")
-                model_used_any = (cached.get("llm") or {}).get("model", model_used_any)
-                continue
+    if not req.force_regen:
+        cached = db.find_simplification(
+            url=page["url"],
+            mode="intelligent",
+            language=lang,
+            source_text_hash=source_hash,
+        )
+        if cached and cached.get("output"):
+            output = cached["output"]
+            model_used = (cached.get("llm") or {}).get("model", model_used)
+            print(f"Using cached simplification: {sid}")
 
-        out, model_used = generate_mode_output_validated(
-            mode=mode,
+    # Generate new simplification if not cached
+    if output is None:
+        output, model_used = generate_simplification(
             title=title,
             source_text=page["source_text"],
             links=important_links,
             language=lang,
             max_retries=1,
         )
-        model_used_any = model_used
 
-        sid = simplification_id_for(
-            url=page["url"],
-            mode=mode,
-            language=lang,
-            source_text_hash=source_hash,
-        )
+        # Save to database
         db.save_simplification(
             simplification_id=sid,
             url=page["url"],
             page_id=page["page_id"],
             source_text_hash=source_hash,
-            mode=mode,
+            mode="intelligent",
             language=lang,
-            output=out,
+            output=output,
             model=model_used,
             session_id=req.session_id,
         )
-        outputs[mode] = out
-        simpl_ids[mode] = sid
-
-    for m in ["easy_read", "checklist", "step_by_step"]:
-        outputs.setdefault(m, None)
-        simpl_ids.setdefault(m, "")
+        print(f"Generated new simplification: {sid}")
 
     return SimplifyResponse(
         ok=True,
@@ -123,9 +116,9 @@ def simplify(req: SimplifyRequest):
         page_id=page["page_id"],
         source_text_hash=source_hash,
         language=req.language,
-        model=model_used_any,
-        outputs=outputs,
-        simplification_ids=simpl_ids,
+        model=model_used,
+        outputs={"intelligent": output},  # Single output with new schema
+        simplification_ids={"intelligent": sid},
     )
 
 
@@ -167,7 +160,10 @@ def chat(req: ChatRequest):
             simpl_output = simpl_data.get("output")
     else:
         cached = db.find_simplification(
-            url=page_url, mode=req.mode, language=lang, source_text_hash=source_hash
+            url=page_url,
+            mode="intelligent",
+            language=lang,
+            source_text_hash=source_hash,
         )
         if cached:
             simpl_output = cached.get("output")
@@ -175,8 +171,7 @@ def chat(req: ChatRequest):
 
     if simpl_output is None and page_url:
         important_links = pick_important_links(page.get("links", []))
-        out, model_used = generate_mode_output_validated(
-            mode=req.mode,
+        out, model_used = generate_simplification(
             title=title,
             source_text=source_text,
             links=important_links,
@@ -185,7 +180,7 @@ def chat(req: ChatRequest):
         )
         sid = simplification_id_for(
             url=page_url,
-            mode=req.mode,
+            mode="intelligent",
             language=lang,
             source_text_hash=source_hash,
         )
@@ -194,7 +189,7 @@ def chat(req: ChatRequest):
             url=page_url,
             page_id=page_id,
             source_text_hash=source_hash,
-            mode=req.mode,
+            mode="intelligent",
             language=lang,
             output=out,
             model=model_used,
@@ -206,7 +201,6 @@ def chat(req: ChatRequest):
     best_ctx = extract_best_context(
         source_text=source_text,
         simpl_output=simpl_output,
-        mode=req.mode,
         language=lang,
         section_id=req.section_id,
         section_text=req.section_text,
