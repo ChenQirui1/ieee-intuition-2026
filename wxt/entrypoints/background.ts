@@ -2,76 +2,137 @@ import { browser } from 'wxt/browser';
 
 type LanguageCode = 'en' | 'zh' | 'ms' | 'ta';
 
-// Keep in sync with sidepanel API base for local development.
-const API_BASE_URL = 'http://127.0.0.1:8000';
-
-const LANGUAGE_LABEL: Record<LanguageCode, string> = {
-  en: 'English',
-  zh: 'Simplified Chinese (简体中文)',
-  ms: 'Malay (Bahasa Melayu)',
-  ta: 'Tamil (தமிழ்)',
+const GOOGLE_TRANSLATE_ENDPOINT = 'https://translate.googleapis.com/translate_a/single';
+const GOOGLE_LANGUAGE_CODE: Record<LanguageCode, string> = {
+  en: 'en',
+  zh: 'zh-CN',
+  ms: 'ms',
+  ta: 'ta',
 };
 
-function parseJsonArrayLoose(text: string): unknown[] | null {
-  const trimmed = (text || '').trim();
-  try {
-    const parsed = JSON.parse(trimmed);
-    return Array.isArray(parsed) ? parsed : null;
-  } catch {
-    // fall through
+function extractTranslatedText(data: unknown): string | null {
+  if (
+    data &&
+    typeof data === 'object' &&
+    'sentences' in data &&
+    Array.isArray((data as { sentences?: unknown[] }).sentences)
+  ) {
+    const joined = (data as { sentences: Array<{ trans?: unknown }> }).sentences
+      .map((sentence) => (typeof sentence?.trans === 'string' ? sentence.trans : ''))
+      .join('');
+    if (joined.trim()) return joined;
   }
 
-  const start = trimmed.indexOf('[');
-  const end = trimmed.lastIndexOf(']');
-  if (start === -1 || end === -1 || end <= start) {
-    return null;
+  if (Array.isArray(data) && Array.isArray(data[0])) {
+    const joined = (data[0] as unknown[])
+      .map((segment) => (Array.isArray(segment) && typeof segment[0] === 'string' ? segment[0] : ''))
+      .join('');
+    if (joined.trim()) return joined;
   }
 
-  try {
-    const parsed = JSON.parse(trimmed.slice(start, end + 1));
-    return Array.isArray(parsed) ? parsed : null;
-  } catch {
-    return null;
+  return null;
+}
+
+async function translateSingleText(text: string, targetLanguage: LanguageCode): Promise<string> {
+  if (!text.trim() || targetLanguage === 'en') return text;
+
+  const params = new URLSearchParams();
+  params.set('client', 'gtx');
+  params.set('sl', 'auto');
+  params.set('tl', GOOGLE_LANGUAGE_CODE[targetLanguage]);
+  params.set('dt', 't');
+  params.set('dj', '1');
+  params.set('q', text);
+
+  const resp = await fetch(`${GOOGLE_TRANSLATE_ENDPOINT}?${params.toString()}`);
+  if (!resp.ok) {
+    throw new Error(`Google translate failed: ${resp.status}`);
   }
+
+  const data = await resp.json();
+  const translated = extractTranslatedText(data);
+  return translated && translated.trim() ? translated : text;
+}
+
+function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  mapper: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (true) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= items.length) return;
+      results[index] = await mapper(items[index], index);
+    }
+  });
+  return Promise.all(workers).then(() => results);
+}
+
+const MARKER_PREFIX = '__CWX9P_';
+
+function buildMarkedPayload(texts: string[]): string {
+  return texts.map((text, index) => `${MARKER_PREFIX}${index}__\n${text}`).join('\n');
+}
+
+function parseMarkedPayload(payload: string, expectedCount: number): string[] | null {
+  const markerRegex = /__CWX9P_(\d+)__/g;
+  const markerMatches = Array.from(payload.matchAll(markerRegex)).map((match) => ({
+    marker: match[0],
+    index: Number.parseInt(match[1] ?? '', 10),
+    start: match.index ?? -1,
+  }));
+
+  if (markerMatches.length !== expectedCount) return null;
+
+  const parsed = new Array<string>(expectedCount).fill('');
+  for (let i = 0; i < markerMatches.length; i += 1) {
+    const current = markerMatches[i];
+    if (!Number.isFinite(current.index) || current.index < 0 || current.index >= expectedCount) {
+      return null;
+    }
+
+    const nextStart = i + 1 < markerMatches.length ? markerMatches[i + 1].start : payload.length;
+    const segmentStart = current.start + current.marker.length;
+    if (segmentStart < 0 || nextStart < segmentStart) return null;
+
+    parsed[current.index] = payload.slice(segmentStart, nextStart).trim();
+  }
+
+  return parsed;
 }
 
 async function translateTexts(texts: string[], targetLanguage: LanguageCode): Promise<string[]> {
   if (!texts.length) return [];
+  if (targetLanguage === 'en') return texts;
 
-  const system = [
-    'You are a translation engine for short UI and webpage snippets.',
-    `Translate each item to ${LANGUAGE_LABEL[targetLanguage]}.`,
-    'Return ONLY a JSON array of strings with the same length and order as the input.',
-    'Do not add any extra text. Do not wrap in markdown.',
-    'Keep URLs, emails, numbers, and punctuation unchanged where possible.',
-  ].join(' ');
+  try {
+    const payload = buildMarkedPayload(texts);
+    const translatedPayload = await translateSingleText(payload, targetLanguage);
+    const parsedBatch = parseMarkedPayload(translatedPayload, texts.length);
+    if (parsedBatch) {
+      return texts.map((original, index) => {
+        const candidate = parsedBatch[index];
+        return typeof candidate === 'string' && candidate.trim() ? candidate : original;
+      });
+    }
+  } catch {
+    // Fall through to per-text fallback.
+  }
 
-  const body = {
-    messages: [
-      { role: 'system', content: system },
-      { role: 'user', content: JSON.stringify(texts) },
-    ],
-    temperature: 0,
-  };
-
-  const resp = await fetch(`${API_BASE_URL}/text-completion`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+  const translated = await mapWithConcurrency(texts, 8, async (text) => {
+    try {
+      const result = await translateSingleText(text, targetLanguage);
+      return result.trim() ? result : text;
+    } catch {
+      return text;
+    }
   });
 
-  if (!resp.ok) {
-    throw new Error(`translate failed: ${resp.status}`);
-  }
-
-  const data = await resp.json();
-  const raw = typeof data?.response === 'string' ? data.response : '';
-  const parsed = parseJsonArrayLoose(raw);
-  if (!parsed || parsed.length !== texts.length) {
-    return texts;
-  }
-
-  return parsed.map((item, idx) => (typeof item === 'string' && item.trim() ? item : texts[idx]));
+  return translated.map((item, index) => (item && item.trim() ? item : texts[index]));
 }
 
 export default defineBackground(() => {

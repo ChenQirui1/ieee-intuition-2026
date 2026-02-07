@@ -48,8 +48,8 @@ const SKIP_TRANSLATE_TAGS = new Set([
   'IFRAME',
 ]);
 
-const TRANSLATE_MAX_TEXT_NODES = 450;
-const TRANSLATE_CHUNK_SIZE = 25;
+const TRANSLATE_MAX_TEXT_NODES = 5000;
+const TRANSLATE_CHUNK_SIZE = 40;
 
 const originalTextByNode = new WeakMap<Text, string>();
 const touchedTextNodes = new Set<Text>();
@@ -61,6 +61,9 @@ const translationCache: Record<LanguageCode, Map<string, string>> = {
 };
 
 let activeTranslateJobId = 0;
+let preferredPageLanguage: LanguageCode = DEFAULT_USER_PREFERENCES.language;
+let currentPageLanguageMode: PageLanguageMode = 'preferred';
+let preferredLanguageRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
 function startTranslationJob(): number {
   activeTranslateJobId += 1;
@@ -81,7 +84,7 @@ function shouldTranslateText(text: string): boolean {
   const trimmed = core.trim();
   if (!trimmed) return false;
   if (trimmed.length < 2) return false;
-  if (/^[\d\s.,:;!?'"()\-–—_/\\]+$/.test(trimmed)) return false;
+  if (/^[\d\s.,:;!?"'()\-_/\\]+$/.test(trimmed)) return false;
   return true;
 }
 
@@ -204,14 +207,23 @@ async function applyPreferredLanguage(targetLanguage: LanguageCode, jobId: numbe
 async function applyPageLanguageMode(mode: PageLanguageMode, targetLanguage: LanguageCode) {
   const jobId = startTranslationJob();
 
-  if (mode === 'original') {
+  if (mode === 'original' || targetLanguage === 'en') {
     restoreOriginalLanguage();
     return;
   }
 
-  // Start from a clean slate so toggles are reversible.
   restoreOriginalLanguage();
   await applyPreferredLanguage(targetLanguage, jobId);
+}
+
+function schedulePreferredLanguageRefresh(delayMs: number = 1200) {
+  if (currentPageLanguageMode !== 'preferred') return;
+  if (preferredLanguageRefreshTimer) {
+    clearTimeout(preferredLanguageRefreshTimer);
+  }
+  preferredLanguageRefreshTimer = setTimeout(() => {
+    void applyPageLanguageMode('preferred', preferredPageLanguage);
+  }, delayMs);
 }
 
 export default defineContentScript({
@@ -242,6 +254,10 @@ function initInterpreter() {
 
     // Notify sidepanel that page is loaded
     notifyPageLoaded();
+
+    window.addEventListener('load', () => {
+      schedulePreferredLanguageRefresh(1200);
+    });
   } catch (error) {
     console.error('[IEEE Extension] Failed to initialize:', error);
   }
@@ -679,7 +695,10 @@ function initMessageListener() {
           : message.language === 'ta'
             ? 'ta'
             : 'en';
-      applyPageLanguageMode(mode, lang);
+      currentPageLanguageMode = mode;
+      preferredPageLanguage = lang;
+      applyPageLanguageMode(currentPageLanguageMode, preferredPageLanguage);
+      schedulePreferredLanguageRefresh(450);
     }
   });
 }
@@ -791,6 +810,7 @@ function notifyPageLoaded() {
   // Wait a bit for page to fully load
   setTimeout(() => {
     handleGetPageContent();
+    schedulePreferredLanguageRefresh(900);
   }, 1000);
 }
 
@@ -805,9 +825,19 @@ async function initAccessibilityFeatures() {
     if (preferences) {
       console.log('[IEEE Extension] Applying accessibility preferences:', preferences);
       applyAccessibilityStyles(preferences);
+      preferredPageLanguage = preferences.language ?? DEFAULT_USER_PREFERENCES.language;
+      if (currentPageLanguageMode === 'preferred') {
+        await applyPageLanguageMode(currentPageLanguageMode, preferredPageLanguage);
+        schedulePreferredLanguageRefresh(1500);
+      }
     } else {
       console.log('[IEEE Extension] No preferences found, using defaults');
       removeAccessibilityStyles();
+      preferredPageLanguage = DEFAULT_USER_PREFERENCES.language;
+      if (currentPageLanguageMode === 'preferred') {
+        await applyPageLanguageMode(currentPageLanguageMode, preferredPageLanguage);
+        schedulePreferredLanguageRefresh(1500);
+      }
     }
 
     // Watch for preference changes (even if preferences aren't set yet).
@@ -815,8 +845,18 @@ async function initAccessibilityFeatures() {
       if (newPreferences) {
         console.log('[IEEE Extension] Preferences updated:', newPreferences);
         applyAccessibilityStyles(newPreferences);
+        preferredPageLanguage = newPreferences.language ?? DEFAULT_USER_PREFERENCES.language;
+        if (currentPageLanguageMode === 'preferred') {
+          void applyPageLanguageMode(currentPageLanguageMode, preferredPageLanguage);
+          schedulePreferredLanguageRefresh(800);
+        }
       } else {
         removeAccessibilityStyles();
+        preferredPageLanguage = DEFAULT_USER_PREFERENCES.language;
+        if (currentPageLanguageMode === 'preferred') {
+          void applyPageLanguageMode(currentPageLanguageMode, preferredPageLanguage);
+          schedulePreferredLanguageRefresh(800);
+        }
       }
     });
   } catch (error) {
@@ -929,3 +969,4 @@ function applyAccessibilityStyles(preferences: UserPreferences) {
 
   console.log('[IEEE Extension] Accessibility styles applied');
 }
+

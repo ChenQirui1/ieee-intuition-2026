@@ -314,6 +314,16 @@ function App() {
   const [autoReadAssistantReplies, setAutoReadAssistantReplies] = useState<boolean>(
     DEFAULT_USER_PREFERENCES.autoReadAssistant,
   );
+  const [preferencesLoaded, setPreferencesLoaded] = useState(false);
+  const messageHandlersRef = useRef<{
+    handleElementClick: (elementData: any) => Promise<void>;
+    generatePageSummary: (pageData: any) => Promise<void>;
+    translateTextsIfNeeded: (texts: string[]) => Promise<string[]>;
+  }>({
+    handleElementClick: async () => {},
+    generatePageSummary: async () => {},
+    translateTextsIfNeeded: async (texts) => texts,
+  });
 
   useEffect(() => {
     if (tts.status === 'idle') {
@@ -367,69 +377,40 @@ function App() {
     };
     getCurrentUrl();
 
-    // Listen for messages from content script
-    const handleMessage = (message: any, sender: any, sendResponse: any) => {
-      console.log('[Sidepanel] Received message:', message);
-      if (message.type === 'CAPTURE_VISIBLE_TAB') {
-        const windowId = sender?.tab?.windowId ?? browser.windows.WINDOW_ID_CURRENT;
-        browser.tabs.captureVisibleTab(windowId, { format: 'png' })
-          .then((dataUrl) => sendResponse({ ok: true, dataUrl }))
-          .catch((error) => {
-            console.error('[Sidepanel] captureVisibleTab failed:', error);
-            sendResponse({ ok: false });
-          });
-        return true;
-      }
-      if (message.type === 'ELEMENT_CLICKED') {
-        // Switch to chat tab if openChat flag is set
-        if (message.openChat) {
-          setActiveTab('chat');
-        }
-        handleElementClick(message.data);
-      } else if (message.type === 'MAGNIFYING_MODE_CHANGED') {
-        setMagnifyingMode(message.enabled);
-      } else if (message.type === 'PAGE_LOADED') {
-        console.log('[Sidepanel] Page loaded data:', message.data);
-        console.log('[Sidepanel] Headings received:', message.data.headings);
-        generatePageSummary(message.data);
-        setHeadings(message.data.headings || []);
-      }
-    };
-
-    browser.runtime.onMessage.addListener(handleMessage);
-
-    // Request initial page summary
-    requestPageSummary();
-
     // Load user preferences for zoom
     loadPreferences();
 
     return () => {
-      browser.runtime.onMessage.removeListener(handleMessage);
+      // no-op cleanup; message listeners are managed by a separate effect.
     };
   }, []);
 
   const loadPreferences = async () => {
     try {
       const preferences = await storage.getItem<UserPreferences>('sync:userPreferences');
+      const preferredLanguage = preferences?.language ?? DEFAULT_USER_PREFERENCES.language;
       applyZoom(preferences?.fontSize ?? DEFAULT_USER_PREFERENCES.fontSize);
       tts.setRate(coerceTtsRate(preferences?.ttsRate));
       setAutoReadAssistantReplies(
         preferences?.autoReadAssistant ?? DEFAULT_USER_PREFERENCES.autoReadAssistant,
       );
-      setLanguage(preferences?.language ?? DEFAULT_USER_PREFERENCES.language);
+      setLanguage(preferredLanguage);
+      await applyPageLanguageModeToActiveTab('preferred', preferredLanguage);
 
       // Watch for preference changes (even if preferences aren't set yet).
       storage.watch<UserPreferences>('sync:userPreferences', (newPreferences) => {
+        const nextLanguage = newPreferences?.language ?? DEFAULT_USER_PREFERENCES.language;
         applyZoom(newPreferences?.fontSize ?? DEFAULT_USER_PREFERENCES.fontSize);
         tts.setRate(coerceTtsRate(newPreferences?.ttsRate));
         setAutoReadAssistantReplies(
           newPreferences?.autoReadAssistant ?? DEFAULT_USER_PREFERENCES.autoReadAssistant,
         );
-        setLanguage(newPreferences?.language ?? DEFAULT_USER_PREFERENCES.language);
+        setLanguage(nextLanguage);
       });
     } catch (error) {
       console.error('[Sidepanel] Failed to load preferences:', error);
+    } finally {
+      setPreferencesLoaded(true);
     }
   };
 
@@ -458,7 +439,10 @@ function App() {
     }
   };
 
-  const applyPageLanguageModeToActiveTab = async (mode: 'preferred' | 'original') => {
+  const applyPageLanguageModeToActiveTab = async (
+    mode: 'preferred' | 'original',
+    preferredLanguage: LanguageCode = language,
+  ) => {
     try {
       const tabs = await browser.tabs.query({ active: true, currentWindow: true });
       const tabId = tabs[0]?.id;
@@ -467,7 +451,7 @@ function App() {
       await browser.tabs.sendMessage(tabId, {
         type: 'SET_PAGE_LANGUAGE_MODE',
         mode,
-        language,
+        language: preferredLanguage,
       });
     } catch (error) {
       console.warn('[Sidepanel] Failed to set page language mode:', error);
@@ -515,15 +499,15 @@ function App() {
 
   useEffect(() => {
     // Refresh summary/headings when the preferred language or URL changes.
-    if (!currentUrl) return;
+    if (!preferencesLoaded || !currentUrl) return;
     requestPageSummary();
-  }, [language, currentUrl]);
+  }, [language, currentUrl, preferencesLoaded]);
 
   useEffect(() => {
     // Default to the preferred language, but allow switching the page back to its original language.
-    if (!currentUrl) return;
-    applyPageLanguageModeToActiveTab(pageLanguageMode);
-  }, [pageLanguageMode, language, currentUrl]);
+    if (!preferencesLoaded || !currentUrl) return;
+    applyPageLanguageModeToActiveTab(pageLanguageMode, language);
+  }, [pageLanguageMode, language, currentUrl, preferencesLoaded]);
 
   const requestPageSummary = async () => {
     try {
@@ -534,6 +518,29 @@ function App() {
     } catch (error) {
       console.error('[Sidepanel] Failed to request page summary:', error);
     }
+  };
+
+  const translateTextsIfNeeded = async (texts: string[]): Promise<string[]> => {
+    if (!texts.length || language === 'en') return texts;
+
+    try {
+      const response = await browser.runtime.sendMessage({
+        type: 'TRANSLATE_TEXTS',
+        targetLanguage: language,
+        texts,
+      });
+
+      if (response?.ok && Array.isArray(response.translations)) {
+        return texts.map((original, idx) => {
+          const candidate = response.translations[idx];
+          return typeof candidate === 'string' && candidate.trim() ? candidate : original;
+        });
+      }
+    } catch (error) {
+      console.warn('[Sidepanel] Failed to translate texts:', error);
+    }
+
+    return texts;
   };
 
   const generatePageSummary = async (pageData: any) => {
@@ -579,8 +586,9 @@ function App() {
       const easyRead = response.outputs.easy_read;
       if (easyRead) {
         console.log('[Sidepanel] Extracted key_points:', easyRead.key_points);
+        const translatedBullets = await translateTextsIfNeeded(easyRead.key_points || []);
         setSummary({
-          bullets: easyRead.key_points || [],
+          bullets: translatedBullets,
         });
       } else {
         console.warn('[Sidepanel] No easy_read output in response');
@@ -632,11 +640,12 @@ function App() {
           altText: hintText || undefined,
           language,
         });
+        const [localizedCaption] = await translateTextsIfNeeded([response.caption]);
 
         const assistantMessage: Message = {
           id: (Date.now() + 1).toString(),
           role: 'assistant',
-          content: response.caption,
+          content: localizedCaption || response.caption,
           timestamp: new Date(),
         };
         const finalMessages = [...updatedMessages, assistantMessage];
@@ -701,11 +710,12 @@ function App() {
 
       // Call the text-completion API with conversation history
       const response = await sendTextCompletion(conversationText, { temperature: 0.7, language });
+      const [localizedReply] = await translateTextsIfNeeded([response.response]);
 
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: response.response,
+        content: localizedReply || response.response,
         timestamp: new Date(),
       };
       const finalMessages = [...updatedMessages, assistantMessage];
@@ -732,6 +742,63 @@ function App() {
       setIsLoading(false);
     }
   };
+
+  useEffect(() => {
+    messageHandlersRef.current = {
+      handleElementClick,
+      generatePageSummary,
+      translateTextsIfNeeded,
+    };
+  }, [handleElementClick, generatePageSummary, translateTextsIfNeeded]);
+
+  useEffect(() => {
+    const handleMessage = (message: any, sender: any, sendResponse: any) => {
+      console.log('[Sidepanel] Received message:', message);
+      if (message.type === 'CAPTURE_VISIBLE_TAB') {
+        const windowId = sender?.tab?.windowId ?? browser.windows.WINDOW_ID_CURRENT;
+        browser.tabs.captureVisibleTab(windowId, { format: 'png' })
+          .then((dataUrl) => sendResponse({ ok: true, dataUrl }))
+          .catch((error) => {
+            console.error('[Sidepanel] captureVisibleTab failed:', error);
+            sendResponse({ ok: false });
+          });
+        return true;
+      }
+      if (message.type === 'ELEMENT_CLICKED') {
+        if (message.openChat) {
+          setActiveTab('chat');
+        }
+        void messageHandlersRef.current.handleElementClick(message.data);
+      } else if (message.type === 'MAGNIFYING_MODE_CHANGED') {
+        setMagnifyingMode(message.enabled);
+      } else if (message.type === 'PAGE_LOADED') {
+        const rawHeadings: Heading[] = Array.isArray(message.data?.headings)
+          ? message.data.headings
+          : [];
+        console.log('[Sidepanel] Page loaded data:', message.data);
+        console.log('[Sidepanel] Headings received:', rawHeadings);
+
+        void (async () => {
+          const translatedTexts = await messageHandlersRef.current.translateTextsIfNeeded(
+            rawHeadings.map((heading) => heading.text),
+          );
+          const localizedHeadings = rawHeadings.map((heading, idx) => ({
+            ...heading,
+            text: translatedTexts[idx] || heading.text,
+          }));
+          setHeadings(localizedHeadings);
+        })();
+
+        void messageHandlersRef.current.generatePageSummary(message.data);
+      }
+      return false;
+    };
+
+    browser.runtime.onMessage.addListener(handleMessage);
+    return () => {
+      browser.runtime.onMessage.removeListener(handleMessage);
+    };
+  }, []);
 
   const toggleSelectionMode = async () => {
     setSelectionMode(!selectionMode);
@@ -840,11 +907,12 @@ function App() {
 
       // Call the text-completion API with conversation history
       const response = await sendTextCompletion(conversationText, { temperature: 0.7, language });
+      const [localizedReply] = await translateTextsIfNeeded([response.response]);
 
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: response.response,
+        content: localizedReply || response.response,
         timestamp: new Date(),
       };
       const finalMessages = [...updatedMessages, assistantMessage];

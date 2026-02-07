@@ -615,7 +615,7 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4 sm:p-8">
-      <div className="max-w-[68rem] w-full flex flex-row items-start gap-4 lg:gap-8">
+      <div className="max-w-[min(68rem,calc(100vw-2rem))] w-full flex flex-row items-start gap-3 lg:gap-8">
         {/* Main Content */}
         <div className="flex-1 min-w-0">
           {step === 'welcome' && (
@@ -944,18 +944,18 @@ function VisualNeedsScreen({
         </div>
       </div>
 
-      <div className="flex flex-col sm:flex-row gap-3">
+      <div className="flex flex-col md:flex-row gap-3">
         <button
           type="button"
           onClick={onBack}
-          className="w-full sm:w-auto sm:min-w-[10.5rem] shrink-0 px-6 py-4 bg-white text-gray-900 text-xl font-bold rounded-xl border-2 border-gray-200 hover:bg-gray-50 focus:outline-none focus:ring-4 focus:ring-blue-200 transition-all whitespace-nowrap"
+          className="w-full md:w-auto md:min-w-[10.5rem] shrink-0 px-6 py-4 bg-white text-gray-900 text-lg sm:text-xl font-bold rounded-xl border-2 border-gray-200 hover:bg-gray-50 focus:outline-none focus:ring-4 focus:ring-blue-200 transition-all whitespace-nowrap"
         >
           {ui.back}
         </button>
         <button
           type="button"
           onClick={onNext}
-          className="w-full sm:flex-1 min-w-0 px-8 py-4 bg-blue-600 text-white text-xl font-bold rounded-xl hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-300 transition-all whitespace-nowrap"
+          className="w-full md:flex-1 min-w-0 px-6 sm:px-8 py-4 bg-blue-600 text-white text-lg sm:text-xl font-bold rounded-xl hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-300 transition-all whitespace-nowrap"
         >
           {ui.next}
         </button>
@@ -1228,18 +1228,18 @@ function CognitiveNeedsScreen({
         </div>
       </div>
 
-      <div className="flex flex-col sm:flex-row gap-3">
+      <div className="flex flex-col md:flex-row gap-3">
         <button
           type="button"
           onClick={onBack}
-          className="w-full sm:w-auto sm:min-w-[10.5rem] shrink-0 px-6 py-4 bg-white text-gray-900 text-xl font-bold rounded-xl border-2 border-gray-200 hover:bg-gray-50 focus:outline-none focus:ring-4 focus:ring-green-100 transition-all whitespace-nowrap"
+          className="w-full md:w-auto md:min-w-[10.5rem] shrink-0 px-6 py-4 bg-white text-gray-900 text-lg sm:text-xl font-bold rounded-xl border-2 border-gray-200 hover:bg-gray-50 focus:outline-none focus:ring-4 focus:ring-green-100 transition-all whitespace-nowrap"
         >
           {ui.back}
         </button>
         <button
           type="button"
           onClick={onNext}
-          className="w-full sm:flex-1 min-w-0 px-8 py-4 bg-green-600 text-white text-xl font-bold rounded-xl hover:bg-green-700 focus:outline-none focus:ring-4 focus:ring-green-300 transition-all whitespace-nowrap"
+          className="w-full md:flex-1 min-w-0 px-6 sm:px-8 py-4 bg-green-600 text-white text-lg sm:text-xl font-bold rounded-xl hover:bg-green-700 focus:outline-none focus:ring-4 focus:ring-green-300 transition-all whitespace-nowrap"
         >
           {ui.complete_setup}
         </button>
@@ -1359,7 +1359,7 @@ function PreviewWindow({ preferences }: { preferences: UserPreferences }) {
   };
 
   return (
-    <div className="w-[clamp(18rem,28vw,22rem)] bg-white rounded-2xl shadow-2xl p-6 sticky top-8 h-fit self-start">
+    <div className="w-[clamp(15rem,26vw,22rem)] bg-white rounded-2xl shadow-2xl p-6 sticky top-8 h-fit self-start">
       <h3 className="text-xl font-bold text-gray-900 mb-4">{ui.live_preview}</h3>
 
       <div
