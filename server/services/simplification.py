@@ -1,11 +1,10 @@
-"""Simplification service - handles all simplification logic."""
+"""Simplification service - handles intelligent content simplification."""
 
 import json
 from typing import Any, Dict, List, Optional, Tuple
 
 from utils.openai_client import call_openai_chat, parse_json_loose, get_openai_model
 from utils.language import language_instruction, language_ok
-from utils.validation import validate_by_mode, ensure_dict
 
 
 def pick_important_links(
@@ -27,23 +26,20 @@ def pick_important_links(
     return cleaned
 
 
-def prompt_for_mode(
-    mode: str,
+def create_simplification_prompt(
     *,
     title: Optional[str],
     source_text: str,
     links: List[Dict[str, str]],
     language: str,
 ) -> List[Dict[str, str]]:
-    """Generate prompt messages for a specific simplification mode."""
+    """Generate prompt for intelligent simplification with optional checklist."""
     system = (
-        "You are an accessibility assistant. "
-        "Rewrite complex webpages into formats that reduce cognitive load. "
+        "You are an accessibility assistant that simplifies complex web content. "
+        "Analyze the content and decide if it's procedural (forms, applications, step-by-step guides). "
         "Return ONLY valid JSON. No markdown. No extra text. "
-        "DO NOT include the schema, the task description, or the context in the output. "
-        "Output must be a JSON object that MATCHES the schema instance. "
-        "Use short sentences and plain language. Prefer bullets and steps. "
-        "If jargon appears, define it in a glossary. " + language_instruction(language)
+        "Use short sentences and plain language. "
+        + language_instruction(language)
     )
 
     ctx = {
@@ -52,55 +48,50 @@ def prompt_for_mode(
         "links": links,
     }
 
-    if mode == "easy_read":
-        schema = {
-            "mode": "easy_read",
-            "about": "string",
-            "key_points": ["string"],
-            "sections": [{"heading": "string", "bullets": ["string"]}],
-            "important_links": [{"label": "string", "url": "string"}],
-            "warnings": ["string"],
-            "glossary": [{"term": "string", "simple": "string"}],
-        }
-    elif mode == "checklist":
-        schema = {
-            "mode": "checklist",
-            "goal": "string",
-            "requirements": [{"item": "string", "details": "string", "required": True}],
-            "documents": [{"item": "string", "details": "string"}],
-            "fees": [{"item": "string", "amount": "string"}],
-            "deadlines": [{"item": "string", "date": "string"}],
-            "actions": [{"item": "string", "url": "string"}],
-            "common_mistakes": ["string"],
-        }
-    elif mode == "step_by_step":
-        schema = {
-            "mode": "step_by_step",
-            "goal": "string",
+    schema = {
+        "summary": {
+            "about": "Brief overview of what this page is about",
+            "key_points": ["Main points in simple language"],
+            "important_links": [{"label": "Link text", "url": "URL"}],
+            "warnings": ["Important warnings or cautions"],
+            "glossary": [{"term": "Technical term", "simple": "Simple explanation"}]
+        },
+        "checklist": {
+            "_note": "Include this ONLY if content is procedural (forms, applications, how-to guides). Set to null otherwise.",
+            "has_checklist": "boolean - true if procedural, false if not",
+            "goal": "What the user is trying to accomplish",
+            "requirements": [{"item": "Requirement name", "details": "Details", "required": True}],
+            "documents": [{"item": "Document name", "details": "Why needed"}],
             "steps": [
                 {
                     "step": 1,
-                    "title": "string",
-                    "what_to_do": "string",
-                    "where_to_click": "string",
-                    "url": None,
-                    "tips": ["string"],
+                    "title": "Step title",
+                    "what_to_do": "Clear instructions",
+                    "where_to_click": "Where to find it",
+                    "url": "Direct link or null",
+                    "tips": ["Helpful tips"]
                 }
             ],
-            "finish_check": ["string"],
+            "common_mistakes": ["Things to avoid"]
         }
-    else:
-        raise ValueError(f"Unknown mode: {mode}")
+    }
 
     user = (
-        "CONTEXT (use this to write the output):\n"
+        "ANALYZE THIS CONTENT:\n"
         f"{json.dumps(ctx, ensure_ascii=False)}\n\n"
-        "OUTPUT SCHEMA (produce an instance of this; do not output the schema itself):\n"
+        "OUTPUT SCHEMA:\n"
         f"{json.dumps(schema, ensure_ascii=False)}\n\n"
-        "REMINDER:\n"
-        "- Return ONLY the final JSON object.\n"
-        "- Do NOT include any extra keys like task/output_schema/context.\n"
-        "- Keep bullets/steps short.\n"
+        "INSTRUCTIONS:\n"
+        "1. ALWAYS include 'summary' section with all fields\n"
+        "2. Determine if content is PROCEDURAL:\n"
+        "   - Forms, applications, registrations → YES\n"
+        "   - Step-by-step guides, tutorials → YES\n"
+        "   - General information, articles → NO\n"
+        "3. If PROCEDURAL: include 'checklist' with has_checklist=true and all fields\n"
+        "4. If NOT PROCEDURAL: set 'checklist' to null OR has_checklist=false\n"
+        "5. Keep language simple and clear\n"
+        "6. Return ONLY the JSON object\n\n"
+        + language_instruction(language)
     )
 
     return [
@@ -109,18 +100,66 @@ def prompt_for_mode(
     ]
 
 
-def generate_mode_output_validated(
+def validate_simplification(obj: Dict[str, Any]) -> Tuple[bool, str]:
+    """Validate the new unified simplification schema."""
+    # Check summary section (required)
+    if "summary" not in obj:
+        return False, "Missing required 'summary' section"
+
+    summary = obj["summary"]
+    if not isinstance(summary, dict):
+        return False, "'summary' must be an object"
+
+    required_summary_fields = ["about", "key_points", "important_links", "warnings", "glossary"]
+    for field in required_summary_fields:
+        if field not in summary:
+            return False, f"summary missing required field: {field}"
+
+    # Validate summary field types
+    if not isinstance(summary.get("key_points"), list):
+        return False, "summary.key_points must be a list"
+    if not isinstance(summary.get("important_links"), list):
+        return False, "summary.important_links must be a list"
+    if not isinstance(summary.get("warnings"), list):
+        return False, "summary.warnings must be a list"
+    if not isinstance(summary.get("glossary"), list):
+        return False, "summary.glossary must be a list"
+
+    # Check checklist section (optional)
+    if "checklist" in obj and obj["checklist"] is not None:
+        checklist = obj["checklist"]
+        if not isinstance(checklist, dict):
+            return False, "'checklist' must be an object or null"
+
+        # If checklist exists, validate has_checklist field
+        if "has_checklist" in checklist:
+            if checklist["has_checklist"] is True:
+                # If has_checklist is true, validate required fields
+                required_checklist_fields = ["goal", "requirements", "documents", "steps", "common_mistakes"]
+                for field in required_checklist_fields:
+                    if field not in checklist:
+                        return False, f"checklist missing required field: {field}"
+
+                # Validate checklist field types
+                if not isinstance(checklist.get("steps"), list):
+                    return False, "checklist.steps must be a list"
+                if not isinstance(checklist.get("requirements"), list):
+                    return False, "checklist.requirements must be a list"
+
+    return True, "ok"
+
+
+def generate_simplification(
     *,
-    mode: str,
     title: Optional[str],
     source_text: str,
     links: List[Dict[str, str]],
     language: str,
     max_retries: int = 1,
 ) -> Tuple[Dict[str, Any], str]:
-    """Generate and validate simplification output. Returns (output, model_used)."""
-    messages = prompt_for_mode(
-        mode, title=title, source_text=source_text, links=links, language=language
+    """Generate intelligent simplification with optional checklist."""
+    messages = create_simplification_prompt(
+        title=title, source_text=source_text, links=links, language=language
     )
 
     last_raw = ""
@@ -130,25 +169,29 @@ def generate_mode_output_validated(
         raw, model_used = call_openai_chat(messages=messages, temperature=0.2)
         last_raw = raw
 
+        # Parse JSON
         try:
             obj = parse_json_loose(raw)
         except Exception as e:
             last_reason = f"Invalid JSON: {e}"
             obj = {}
 
-        ok_schema, reason_schema, obj_norm = validate_by_mode(mode, ensure_dict(obj))
-        ok_lang = language_ok(language, obj_norm)
+        # Validate schema
+        ok_schema, reason_schema = validate_simplification(obj)
 
+        # Validate language
+        ok_lang = language_ok(language, obj)
         if not ok_lang:
             reason_lang = f"Wrong language for '{language}'"
         else:
             reason_lang = "ok"
 
         if ok_schema and ok_lang:
-            return obj_norm, model_used
+            return obj, model_used
 
         last_reason = f"{reason_schema}; {reason_lang}"
 
+        # Retry with correction
         if attempt < max_retries:
             messages = messages + [
                 {"role": "assistant", "content": raw},
@@ -158,13 +201,25 @@ def generate_mode_output_validated(
                         "Your previous output was INVALID.\n"
                         f"Problems: {last_reason}\n\n"
                         "Fix it now and return ONLY the corrected JSON object.\n"
-                        "Do NOT include the schema, task, or context.\n"
+                        "Remember: summary is REQUIRED, checklist is OPTIONAL.\n"
                         + language_instruction(language)
                     ),
                 },
             ]
 
-    fallback = {"mode": mode, "raw": last_raw, "error": last_reason}
+    # Fallback
+    fallback = {
+        "summary": {
+            "about": "Error processing content",
+            "key_points": ["Unable to simplify content"],
+            "important_links": [],
+            "warnings": ["Processing error occurred"],
+            "glossary": []
+        },
+        "checklist": None,
+        "error": last_reason,
+        "raw": last_raw
+    }
     return fallback, get_openai_model()
 
 
@@ -172,13 +227,12 @@ def extract_best_context(
     *,
     source_text: str,
     simpl_output: Any,
-    mode: str,
     language: str,
     section_id: Optional[str],
     section_text: Optional[str],
 ) -> Dict[str, Any]:
     """Extract the best context for chat based on section focus."""
-    ctx: Dict[str, Any] = {"mode": mode, "language": language}
+    ctx: Dict[str, Any] = {"language": language}
 
     if section_text and section_text.strip():
         ctx["focus"] = "section_text"
@@ -187,24 +241,13 @@ def extract_best_context(
             ctx["section_id"] = section_id
         return ctx
 
-    if section_id and isinstance(simpl_output, dict):
-        sections = simpl_output.get("sections")
-        if isinstance(sections, list):
-            for s in sections:
-                if not isinstance(s, dict):
-                    continue
-                heading = str(s.get("heading") or "")
-                if heading and heading.strip().lower() == section_id.strip().lower():
-                    bullets = s.get("bullets") or []
-                    ctx["focus"] = "section_id"
-                    ctx["section_id"] = section_id
-                    ctx["section_heading"] = heading
-                    ctx["section_bullets"] = (
-                        bullets[:12] if isinstance(bullets, list) else bullets
-                    )
-                    return ctx
+    # Use simplified content if available
+    if isinstance(simpl_output, dict):
+        ctx["focus"] = "simplified"
+        ctx["simplified"] = simpl_output
+        ctx["source_text"] = source_text[:8000]
+        return ctx
 
     ctx["focus"] = "page_fallback"
-    ctx["simplified"] = simpl_output
     ctx["source_text"] = source_text[:8000]
     return ctx

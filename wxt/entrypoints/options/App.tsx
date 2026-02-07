@@ -543,7 +543,7 @@ function App() {
 
   const startButtonRef = useRef<HTMLButtonElement | null>(null);
   const visualButtonRef = useRef<HTMLButtonElement | null>(null);
-  const cognitiveButtonRef = useRef<HTMLInputElement | null>(null);
+  const cognitiveButtonRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     // Load existing preferences if the user re-opens the options page.
@@ -979,7 +979,7 @@ function CognitiveNeedsScreen({
   ) => void;
   onBack: () => void;
   onNext: () => void;
-  buttonRef: React.RefObject<HTMLInputElement | null>;
+  buttonRef: React.RefObject<HTMLButtonElement | null>;
 }) {
   const ui = getUiStrings(preferences.language);
 
@@ -1081,7 +1081,6 @@ function CognitiveNeedsScreen({
             </div>
           </div>
           <input
-            ref={buttonRef}
             type="checkbox"
             checked={preferences.hideAds}
             onChange={(e) => updatePreference('hideAds', e.target.checked)}
@@ -1244,6 +1243,13 @@ function CognitiveNeedsScreen({
           {ui.complete_setup}
         </button>
       </div>
+      <button
+        ref={buttonRef}
+        onClick={onNext}
+        className="w-full px-8 py-4 bg-green-600 text-white text-xl font-bold rounded-xl hover:bg-green-700 focus:outline-none focus:ring-4 focus:ring-green-300 transition-all"
+      >
+        Complete Setup ✓
+      </button>
     </div>
   );
 }

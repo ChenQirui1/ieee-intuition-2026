@@ -4,16 +4,22 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-# Load environment variables
+
+# Database imports - uses factory pattern to select implementation
+from database import get_database
+
+# API routers imports
+from api.routes import router as main_router
+from api.test_routes import router as test_router
+
+# Load environment variables first
 load_dotenv()
 
-# Initialize database
-from database.firebase_database import FirebaseDatabase
-
-db = FirebaseDatabase()
+# Initialize database (automatically selects based on DATABASE_TYPE env var)
+db = get_database()
 
 # Create FastAPI app
-app = FastAPI(title="Scraper + Accessibility Simplifier API")
+app = FastAPI(title="Scraper + Accessibility Backend API")
 
 # CORS middleware
 app.add_middleware(
@@ -31,8 +37,5 @@ app.add_middleware(
 )
 
 # Include routers
-from api.routes import router as main_router
-from api.test_routes import router as test_router
-
 app.include_router(main_router)
 app.include_router(test_router)

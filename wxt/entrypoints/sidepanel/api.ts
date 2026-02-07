@@ -38,11 +38,16 @@ export interface SimplifyResponse {
     };
     checklist?: any;
     step_by_step?: any;
+    // Future/backwards-compatible bundle (example: outputs.intelligent.summary/checklist)
+    intelligent?: any;
+    [key: string]: any;
   };
   simplification_ids: {
     easy_read?: string;
     checklist?: string;
     step_by_step?: string;
+    intelligent?: string;
+    [key: string]: string | undefined;
   };
 }
 
