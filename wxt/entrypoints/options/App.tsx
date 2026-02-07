@@ -29,9 +29,9 @@ function App() {
     profileName: 'My Profile',
   });
 
-  const startButtonRef = useRef<HTMLButtonElement>(null);
-  const visualButtonRef = useRef<HTMLButtonElement>(null);
-  const cognitiveButtonRef = useRef<HTMLButtonElement>(null);
+  const startButtonRef = useRef<HTMLButtonElement>(null!);
+  const visualButtonRef = useRef<HTMLButtonElement>(null!);
+  const cognitiveButtonRef = useRef<HTMLButtonElement>(null!);
 
   // Auto-focus on mount and step changes
   useEffect(() => {
@@ -411,7 +411,6 @@ function CognitiveNeedsScreen({
             </div>
           </div>
           <input
-            ref={buttonRef}
             type="checkbox"
             checked={preferences.hideAds}
             onChange={(e) => updatePreference('hideAds', e.target.checked)}
@@ -468,6 +467,7 @@ function CognitiveNeedsScreen({
       </div>
 
       <button
+        ref={buttonRef}
         onClick={onNext}
         className="w-full px-8 py-4 bg-green-600 text-white text-xl font-bold rounded-xl hover:bg-green-700 focus:outline-none focus:ring-4 focus:ring-green-300 transition-all"
       >

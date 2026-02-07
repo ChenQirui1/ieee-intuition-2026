@@ -36,11 +36,16 @@ export interface SimplifyResponse {
     };
     checklist?: any;
     step_by_step?: any;
+    // Future/backwards-compatible bundle (example: outputs.intelligent.summary/checklist)
+    intelligent?: any;
+    [key: string]: any;
   };
   simplification_ids: {
     easy_read?: string;
     checklist?: string;
     step_by_step?: string;
+    intelligent?: string;
+    [key: string]: string | undefined;
   };
 }
 
@@ -62,7 +67,7 @@ export interface ChatResponse {
  */
 export async function simplifyPage(
   url: string,
-  mode: 'easy_read' | 'checklist' | 'step_by_step' | 'all' = 'all',
+  mode: 'easy_read' | 'checklist' | 'step_by_step' | 'all' | 'intelligent' = 'all',
   language: 'en' | 'zh' | 'ms' | 'ta' = 'en',
   sessionId?: string,
   forceRegen: boolean = false
@@ -110,7 +115,7 @@ export async function sendChatMessage(
   history: ChatMessage[] = [],
   options: {
     pageId?: string;
-    mode?: 'easy_read' | 'checklist' | 'step_by_step';
+    mode?: 'easy_read' | 'checklist' | 'step_by_step' | 'intelligent';
     language?: 'en' | 'zh' | 'ms' | 'ta';
     simplificationId?: string;
     sectionId?: string;
