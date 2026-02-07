@@ -29,9 +29,9 @@ function App() {
     profileName: 'My Profile',
   });
 
-  const startButtonRef = useRef<HTMLButtonElement>(null);
-  const visualButtonRef = useRef<HTMLButtonElement>(null);
-  const cognitiveButtonRef = useRef<HTMLButtonElement>(null);
+  const startButtonRef = useRef<HTMLButtonElement | null>(null);
+  const visualButtonRef = useRef<HTMLButtonElement | null>(null);
+  const cognitiveButtonRef = useRef<HTMLInputElement | null>(null);
 
   // Auto-focus on mount and step changes
   useEffect(() => {
@@ -121,7 +121,7 @@ function WelcomeScreen({
   buttonRef,
 }: {
   onStart: () => void;
-  buttonRef: React.RefObject<HTMLButtonElement>;
+  buttonRef: React.RefObject<HTMLButtonElement | null>;
 }) {
   return (
     <div className="bg-white rounded-2xl shadow-2xl p-16 text-center">
@@ -163,7 +163,7 @@ function VisualNeedsScreen({
     value: UserPreferences[K]
   ) => void;
   onNext: () => void;
-  buttonRef: React.RefObject<HTMLButtonElement>;
+  buttonRef: React.RefObject<HTMLButtonElement | null>;
 }) {
   return (
     <div className="bg-white rounded-2xl shadow-2xl p-12">
@@ -381,7 +381,7 @@ function CognitiveNeedsScreen({
     value: UserPreferences[K]
   ) => void;
   onNext: () => void;
-  buttonRef: React.RefObject<HTMLButtonElement>;
+  buttonRef: React.RefObject<HTMLInputElement | null>;
 }) {
   return (
     <div className="bg-white rounded-2xl shadow-2xl p-12">

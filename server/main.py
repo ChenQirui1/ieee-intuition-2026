@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import base64
 from typing import Any, Dict, List, Tuple, Optional
+from urllib.parse import urlparse, urljoin
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -65,6 +67,8 @@ app.add_middleware(
 
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 DEFAULT_MODEL = "gpt-3.5-turbo-0125"
+DEFAULT_VISION_MODEL = "gpt-4o-mini"
+MAX_IMAGE_BYTES = 4 * 1024 * 1024  # 4MB
 
 
 def get_openai_key() -> str:
@@ -78,11 +82,20 @@ def get_openai_model() -> str:
     return os.getenv("OPENAI_MODEL", DEFAULT_MODEL)
 
 
-def call_openai_chat(*, messages: List[Dict[str, str]], temperature: float = 0.2) -> Tuple[str, str]:
-    api_key = get_openai_key()
-    model = get_openai_model()
+def get_openai_vision_model() -> str:
+    return (os.getenv("OPENAI_VISION_MODEL") or DEFAULT_VISION_MODEL).strip() or DEFAULT_VISION_MODEL
 
-    payload = {"model": model, "messages": messages, "temperature": temperature}
+
+def call_openai_chat(
+    *,
+    messages: List[Dict[str, Any]],
+    temperature: float = 0.2,
+    model: Optional[str] = None,
+) -> Tuple[str, str]:
+    api_key = get_openai_key()
+    model_name = (model or get_openai_model()).strip() or get_openai_model()
+
+    payload = {"model": model_name, "messages": messages, "temperature": temperature}
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
     try:
@@ -97,7 +110,77 @@ def call_openai_chat(*, messages: List[Dict[str, str]], temperature: float = 0.2
     content = ""
     if data.get("choices"):
         content = data["choices"][0].get("message", {}).get("content", "") or ""
-    return content, data.get("model", model)
+    return content, data.get("model", model_name)
+
+
+def _fetch_image_as_data_url(image_url: str) -> str:
+    """
+    Fetch an image and return it as a data URL so we send the actual pixels to the vision model.
+    We manually follow redirects so we can validate each hop against SSRF rules.
+    """
+    parsed = urlparse(image_url)
+    if parsed.scheme == "data":
+        if len(image_url) > 2 * MAX_IMAGE_BYTES:
+            raise HTTPException(status_code=413, detail="data URL image is too large")
+        return image_url
+
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="Only http(s) or data image URLs are supported")
+
+    current_url = image_url
+    for _ in range(5):
+        p = urlparse(current_url)
+        if not p.hostname:
+            raise HTTPException(status_code=400, detail="image_url must include a hostname")
+        assert_public_hostname(p.hostname)
+
+        try:
+            with httpx.stream(
+                "GET",
+                current_url,
+                follow_redirects=False,
+                timeout=20.0,
+                headers={"User-Agent": "ClearWeb/1.0"},
+            ) as resp:
+                if resp.status_code in (301, 302, 303, 307, 308) and resp.headers.get("location"):
+                    current_url = urljoin(current_url, resp.headers["location"])
+                    continue
+
+                if resp.status_code >= 400:
+                    # Best-effort read a short error body (might be HTML).
+                    err_body = ""
+                    try:
+                        err_body = (resp.read() or b"")[:200].decode("utf-8", errors="replace")
+                    except Exception:
+                        err_body = ""
+                    raise HTTPException(status_code=resp.status_code, detail=f"Image fetch failed: {err_body}".strip())
+
+                content_type = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+                if not content_type.startswith("image/"):
+                    raise HTTPException(status_code=415, detail=f"Unsupported content-type: {content_type or 'unknown'}")
+
+                chunks: List[bytes] = []
+                total = 0
+                for chunk in resp.iter_bytes():
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > MAX_IMAGE_BYTES:
+                        raise HTTPException(status_code=413, detail=f"Image too large ({total} bytes)")
+                    chunks.append(chunk)
+
+                data = b"".join(chunks)
+                if not data:
+                    raise HTTPException(status_code=502, detail="Fetched image was empty")
+
+                b64 = base64.b64encode(data).decode("ascii")
+                return f"data:{content_type};base64,{b64}"
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Failed to fetch image: {exc}") from exc
+
+    raise HTTPException(status_code=400, detail="Too many redirects fetching image")
 
 
 def parse_json_loose(text: str) -> Dict[str, Any]:
@@ -857,3 +940,71 @@ def text_completion(body: Dict[str, Any]):
         raise HTTPException(status_code=400, detail="Either 'text' or 'messages' field is required")
 
     return {"ok": True, "model": model_used, "response": response_text}
+
+
+@app.post("/image-caption")
+def image_caption(body: Dict[str, Any]):
+    """
+    Generate a short caption for an image URL (used by the extension when an <img> is clicked).
+    Expects: {"image_url": "...", "alt_text": "...", "language": "en"}
+    """
+    image_url = (body.get("image_url") or "").strip()
+    if not image_url:
+        raise HTTPException(status_code=400, detail="'image_url' field is required")
+
+    alt_text = (body.get("alt_text") or "").strip()
+    lang = (body.get("language") or "en").strip()
+    if lang not in LANG_NAME:
+        lang = "en"
+
+    lang_name = LANG_NAME.get(lang, "English")
+    system = (
+        "You write image captions for a browser extension that helps elderly and visually impaired users. "
+        f"Write the caption in {lang_name}. "
+        "Use exactly one sentence (12-25 words). Plain language. "
+        "Do not output a title or a 1-3 word label; describe what is visible with concrete details. "
+        "Describe only what you can see. Avoid guessing or adding facts not visible. "
+        "Do not identify or name real people; describe them generically (e.g., 'a person', 'a group of people'). "
+        "If the image is a chart/diagram, describe what it shows briefly."
+    )
+
+    user_text = "Write a short caption describing what you see in this image."
+    if alt_text:
+        user_text += (
+            " The page may include caption or alt text, but do not copy it."
+        )
+
+    try:
+        data_url = _fetch_image_as_data_url(image_url)
+    except HTTPException:
+        # If we can't fetch bytes (blocked/too large), fall back to giving OpenAI the remote URL.
+        data_url = image_url
+
+    messages: List[Dict[str, Any]] = [
+        {"role": "system", "content": system},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": user_text},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+        },
+    ]
+
+    caption, model_used = call_openai_chat(
+        messages=messages,
+        temperature=0.2,
+        model=get_openai_vision_model(),
+    )
+
+    caption = (caption or "").strip()
+    if not caption:
+        raise HTTPException(status_code=502, detail="OpenAI returned an empty caption")
+
+    caption = caption.splitlines()[0].strip()
+    if len(caption) >= 2 and (
+        (caption[0] == '"' and caption[-1] == '"') or (caption[0] == "'" and caption[-1] == "'")
+    ):
+        caption = caption[1:-1].strip()
+
+    return {"ok": True, "model": model_used, "caption": caption}

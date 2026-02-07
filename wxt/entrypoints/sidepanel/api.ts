@@ -180,6 +180,36 @@ export async function sendTextCompletion(
 }
 
 /**
+ * Generate a short caption for an image URL
+ */
+export async function sendImageCaption(
+  imageUrl: string,
+  options: {
+    altText?: string;
+    language?: 'en' | 'zh' | 'ms' | 'ta';
+  } = {}
+): Promise<{ ok: boolean; model: string; caption: string }> {
+  const response = await fetch(`${API_BASE_URL}/image-caption`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      image_url: imageUrl,
+      alt_text: options.altText,
+      language: options.language || 'en',
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`API error: ${response.status} - ${errorText}`);
+  }
+
+  return response.json();
+}
+
+/**
  * Test if the backend server is reachable
  */
 export async function testConnection(): Promise<boolean> {

@@ -134,16 +134,47 @@ function initClickHandler() {
 
     selectedElement = target;
 
-    // Extract text content
-    const text = target.textContent?.trim() || '';
+    const tag = target.tagName.toLowerCase();
 
-    // Extract element information
-    const elementData = {
-      tag: target.tagName.toLowerCase(),
-      text: text,
+    let elementData: any = {
+      tag,
       id: target.id || undefined,
       classes: Array.from(target.classList),
     };
+
+    // Images often have no textContent; send src/alt so the sidepanel can caption them.
+    if (target instanceof HTMLImageElement) {
+      const img = target as HTMLImageElement;
+      const rawSrc = img.currentSrc || img.src || '';
+
+      let src: string | undefined;
+      try {
+        src = rawSrc ? new URL(rawSrc, document.baseURI).toString() : undefined;
+      } catch {
+        src = rawSrc || undefined;
+      }
+
+      const figcaption = img
+        .closest('figure')
+        ?.querySelector('figcaption')
+        ?.textContent?.trim() || '';
+
+      elementData = {
+        ...elementData,
+        tag: 'img',
+        text: (img.alt || figcaption || '').trim(),
+        src,
+        alt: img.alt || undefined,
+        title: img.title || undefined,
+        figcaption: figcaption || undefined,
+      };
+    } else {
+      const text = target.textContent?.trim() || '';
+      elementData = {
+        ...elementData,
+        text,
+      };
+    }
 
     // Send to sidepanel to open chat
     browser.runtime.sendMessage({

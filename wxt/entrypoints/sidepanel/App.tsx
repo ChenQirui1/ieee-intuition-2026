@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { browser } from 'wxt/browser';
 import { storage } from '@wxt-dev/storage';
-import { simplifyPage, sendTextCompletion } from './api';
+import { simplifyPage, sendImageCaption, sendTextCompletion } from './api';
 
 interface Message {
   id: string;
@@ -261,7 +261,61 @@ function App() {
   };
 
   const handleElementClick = async (elementData: any) => {
-    const { text, tag } = elementData;
+    const { text, tag, src, alt, figcaption } = elementData;
+
+    // Images often have no textContent, so handle them separately.
+    if (tag === 'img') {
+      const imageUrl = typeof src === 'string' ? src.trim() : '';
+      if (!imageUrl) return;
+
+      const hintText = (alt || figcaption || '').trim();
+      const userPrompt = 'Describe this image.';
+
+      const userMessage: Message = {
+        id: Date.now().toString(),
+        role: 'user',
+        content: userPrompt,
+        timestamp: new Date(),
+      };
+      const updatedMessages = [...messages, userMessage];
+      setMessages(updatedMessages);
+      await storage.setItem(`local:chatMessages:${currentUrl}`, updatedMessages);
+
+      setIsLoading(true);
+      setError('');
+      try {
+        const response = await sendImageCaption(imageUrl, {
+          altText: hintText || undefined,
+          language: 'en',
+        });
+
+        const assistantMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: response.caption,
+          timestamp: new Date(),
+        };
+        const finalMessages = [...updatedMessages, assistantMessage];
+        setMessages(finalMessages);
+        await storage.setItem(`local:chatMessages:${currentUrl}`, finalMessages);
+      } catch (error) {
+        console.error('[Sidepanel] Failed to caption image:', error);
+        setError(error instanceof Error ? error.message : 'Failed to caption image');
+
+        const errorMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: 'Sorry, I could not caption that image. Please make sure the backend server is running.',
+          timestamp: new Date(),
+        };
+        const finalMessages = [...updatedMessages, errorMessage];
+        setMessages(finalMessages);
+        await storage.setItem(`local:chatMessages:${currentUrl}`, finalMessages);
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
 
     if (!text || text.trim().length === 0) {
       return;
@@ -734,7 +788,7 @@ function App() {
                   />
                 </svg>
                 <p className="text-base font-medium mb-1">No conversation yet</p>
-                <p className="text-sm">Click on paragraphs or text on the page to start</p>
+                <p className="text-sm">Click on text or images on the page to start</p>
               </div>
             ) : (
               <>
