@@ -45,7 +45,7 @@ function App() {
 
   const startButtonRef = useRef<HTMLButtonElement | null>(null);
   const visualButtonRef = useRef<HTMLButtonElement | null>(null);
-  const cognitiveButtonRef = useRef<HTMLInputElement | null>(null);
+  const cognitiveButtonRef = useRef<HTMLButtonElement | null>(null);
 
   // Auto-focus on mount and step changes
   useEffect(() => {
@@ -395,7 +395,7 @@ function CognitiveNeedsScreen({
     value: UserPreferences[K]
   ) => void;
   onNext: () => void;
-  buttonRef: React.RefObject<HTMLInputElement | null>;
+  buttonRef: React.RefObject<HTMLButtonElement | null>;
 }) {
   const isTtsSupported =
     typeof window !== 'undefined'

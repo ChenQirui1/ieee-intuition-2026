@@ -125,6 +125,7 @@ const DEFAULT_USER_PREFERENCES: UserPreferences = {
   fontSize: 'standard',
   linkStyle: 'default',
   contrastMode: 'standard',
+  magnifyingZoomLevel: 2.5,
   hideAds: false,
   simplifyLanguage: false,
   showBreadcrumbs: false,
@@ -206,6 +207,8 @@ function App() {
   const [backendStatus, setBackendStatus] = useState<'unknown' | 'connected' | 'disconnected'>('unknown');
   const chatEndRef = useRef<HTMLDivElement>(null);
   const tts = useTts();
+  const summary: PageSummary | null =
+    easyRead && easyRead.key_points.length > 0 ? { bullets: easyRead.key_points } : null;
 
   const [ttsTarget, setTtsTarget] = useState<
     | { kind: 'summary' }
@@ -759,7 +762,7 @@ function App() {
       setMessages(updatedMessages);
       await storage.setItem(`local:chatMessages:${currentUrl}`, updatedMessages);
 
-      setIsLoading(true);
+      setIsChatLoading(true);
       setError('');
       try {
         const response = await sendImageCaption(imageUrl, {
@@ -792,7 +795,7 @@ function App() {
         await storage.setItem(`local:chatMessages:${currentUrl}`, finalMessages);
         maybeAutoReadAssistantReply(errorMessage);
       } finally {
-        setIsLoading(false);
+        setIsChatLoading(false);
       }
       return;
     }
@@ -1020,6 +1023,8 @@ function App() {
       if (hasSteps === false || stepByStepGuide) return;
       await runSimplify('step_by_step');
     }
+  };
+
   const startSummarySpeech = () => {
     if (!tts.isSupported) return;
     const bullets = summary?.bullets ?? [];
@@ -1189,9 +1194,21 @@ function App() {
         /* Summary Tab */
         <>
           <div className="flex-1 overflow-y-auto p-6">
-            <div className="mb-4">
-              <h2 className="text-2xl font-bold text-gray-800">Simplified Reading</h2>
-              <p className="text-sm text-gray-600 mt-1">Pick a format that is easiest to follow.</p>
+            <div className="flex items-start justify-between gap-3 mb-4">
+              <div className="min-w-0">
+                <h2 className="text-2xl font-bold text-gray-800">Simplified Reading</h2>
+                <p className="text-sm text-gray-600 mt-1">Pick a format that is easiest to follow.</p>
+              </div>
+              <div className="flex flex-col items-end gap-2 shrink-0">
+                <button
+                  onClick={requestPageSummary}
+                  disabled={isSimplifying}
+                  className="px-4 py-2 text-sm font-semibold bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors shadow-sm"
+                >
+                  🔄 Refresh
+                </button>
+                {renderTopSpeakerControls('summary')}
+              </div>
             </div>
 
             <div className="mb-4">
@@ -1589,27 +1606,6 @@ function App() {
                     ) : null}
                   </>
                 )}
-            <div className="flex items-start justify-between gap-3 mb-4">
-              <h2 className="text-3xl font-bold text-gray-800 flex items-center gap-2">
-                <span className="text-4xl">💡</span>
-                In short...
-              </h2>
-              <div className="flex flex-col items-end gap-2 shrink-0">
-                <button
-                  onClick={requestPageSummary}
-                  disabled={isLoading}
-                  className="px-4 py-2 text-sm font-semibold bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors shadow-sm"
-                >
-                  🔄 Refresh
-                </button>
-                {renderTopSpeakerControls('summary')}
-              </div>
-            </div>
-            {isLoading && !summary ? (
-              <div className="space-y-3">
-                <div className="h-4 bg-gray-300 rounded animate-pulse"></div>
-                <div className="h-4 bg-gray-300 rounded animate-pulse w-5/6"></div>
-                <div className="h-4 bg-gray-300 rounded animate-pulse w-4/6"></div>
               </div>
             ) : (
               <div className="space-y-4">
@@ -1830,7 +1826,7 @@ function App() {
               <div className="flex flex-col items-end gap-2 shrink-0">
                 <button
                   onClick={requestPageSummary}
-                  disabled={isLoading}
+                  disabled={isSimplifying}
                   className="px-4 py-2 text-sm font-semibold bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors shadow-sm"
                 >
                   🔄 Refresh
@@ -1953,7 +1949,7 @@ function App() {
             ) : (
               <>
                 {messages.map((message) => {
-                 const isAssistant = message.role === 'assistant';
+                  const isAssistant = message.role === 'assistant';
                   const isActive =
                     isAssistant
                     && ttsTarget?.kind === 'chat'
@@ -2027,8 +2023,8 @@ function App() {
                         )}
                       </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
                 {isChatLoading && (
                   <div className="flex justify-start">
                     <div className="bg-white text-gray-900 shadow-md border border-gray-200 rounded-lg px-4 py-3">

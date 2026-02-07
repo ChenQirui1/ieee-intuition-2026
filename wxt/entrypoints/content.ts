@@ -19,6 +19,7 @@ const DEFAULT_USER_PREFERENCES: UserPreferences = {
   fontSize: 'standard',
   linkStyle: 'default',
   contrastMode: 'standard',
+  magnifyingZoomLevel: 2.5,
   hideAds: false,
   simplifyLanguage: false,
   showBreadcrumbs: false,
