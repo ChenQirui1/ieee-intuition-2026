@@ -2,6 +2,9 @@
 server/secrets/
 server/secrets/*.json
 .env
+.env.local
+.env.production
+.env.*.local
 
 
 .venv
