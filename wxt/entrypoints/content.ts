@@ -2,7 +2,11 @@ import tocbot from 'tocbot';
 import { browser } from 'wxt/browser';
 import { storage } from '@wxt-dev/storage';
 
+type LanguageCode = 'en' | 'zh' | 'ms' | 'ta';
+type PageLanguageMode = 'preferred' | 'original';
+
 interface UserPreferences {
+  language: LanguageCode;
   fontSize: 'standard' | 'large' | 'extra-large';
   linkStyle: 'default' | 'underline' | 'highlight' | 'border';
   contrastMode: 'standard' | 'high-contrast-yellow';
@@ -16,6 +20,7 @@ interface UserPreferences {
 }
 
 const DEFAULT_USER_PREFERENCES: UserPreferences = {
+  language: 'en',
   fontSize: 'standard',
   linkStyle: 'default',
   contrastMode: 'standard',
@@ -27,6 +32,199 @@ const DEFAULT_USER_PREFERENCES: UserPreferences = {
   autoReadAssistant: false,
   profileName: 'My Profile',
 };
+
+const SKIP_TRANSLATE_TAGS = new Set([
+  'SCRIPT',
+  'STYLE',
+  'NOSCRIPT',
+  'TEXTAREA',
+  'INPUT',
+  'SELECT',
+  'OPTION',
+  'CODE',
+  'PRE',
+  'SVG',
+  'CANVAS',
+  'IFRAME',
+]);
+
+const TRANSLATE_MAX_TEXT_NODES = 5000;
+const TRANSLATE_CHUNK_SIZE = 40;
+
+const originalTextByNode = new WeakMap<Text, string>();
+const touchedTextNodes = new Set<Text>();
+const translationCache: Record<LanguageCode, Map<string, string>> = {
+  en: new Map(),
+  zh: new Map(),
+  ms: new Map(),
+  ta: new Map(),
+};
+
+let activeTranslateJobId = 0;
+let preferredPageLanguage: LanguageCode = DEFAULT_USER_PREFERENCES.language;
+let currentPageLanguageMode: PageLanguageMode = 'preferred';
+let preferredLanguageRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+function startTranslationJob(): number {
+  activeTranslateJobId += 1;
+  return activeTranslateJobId;
+}
+
+function splitWhitespace(value: string): { leading: string; core: string; trailing: string } {
+  const match = value.match(/^(\s*)(.*?)(\s*)$/s);
+  return {
+    leading: match?.[1] ?? '',
+    core: match?.[2] ?? value,
+    trailing: match?.[3] ?? '',
+  };
+}
+
+function shouldTranslateText(text: string): boolean {
+  const { core } = splitWhitespace(text);
+  const trimmed = core.trim();
+  if (!trimmed) return false;
+  if (trimmed.length < 2) return false;
+  if (/^[\d\s.,:;!?"'()\-_/\\]+$/.test(trimmed)) return false;
+  return true;
+}
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    out.push(items.slice(i, i + size));
+  }
+  return out;
+}
+
+function collectTranslatableTextNodes(): Text[] {
+  const root = document.body || document.documentElement;
+  if (!root) return [];
+
+  const walker = document.createTreeWalker(
+    root,
+    NodeFilter.SHOW_TEXT,
+    {
+      acceptNode(node: Node) {
+        if (!(node instanceof Text)) return NodeFilter.FILTER_REJECT;
+        const parent = node.parentElement;
+        if (!parent) return NodeFilter.FILTER_REJECT;
+
+        if (parent.closest('[data-ieee-extension]')) return NodeFilter.FILTER_REJECT;
+        if (parent.isContentEditable) return NodeFilter.FILTER_REJECT;
+        if (SKIP_TRANSLATE_TAGS.has(parent.tagName)) return NodeFilter.FILTER_REJECT;
+
+        const text = node.nodeValue ?? '';
+        if (!shouldTranslateText(text)) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    } as unknown as NodeFilter,
+  );
+
+  const nodes: Text[] = [];
+  while (nodes.length < TRANSLATE_MAX_TEXT_NODES && walker.nextNode()) {
+    nodes.push(walker.currentNode as Text);
+  }
+  return nodes;
+}
+
+async function requestTranslations(texts: string[], targetLanguage: LanguageCode): Promise<string[]> {
+  try {
+    const response = await browser.runtime.sendMessage({
+      type: 'TRANSLATE_TEXTS',
+      targetLanguage,
+      texts,
+    });
+
+    if (response?.ok && Array.isArray(response.translations)) {
+      return response.translations.map((t: unknown, idx: number) => {
+        if (typeof t === 'string' && t.trim()) return t;
+        return texts[idx] ?? '';
+      });
+    }
+  } catch (error) {
+    console.warn('[IEEE Extension] Translation request failed:', error);
+  }
+
+  return texts;
+}
+
+function restoreOriginalLanguage() {
+  for (const node of Array.from(touchedTextNodes)) {
+    const original = originalTextByNode.get(node);
+    if (typeof original === 'string') {
+      node.nodeValue = original;
+    }
+  }
+  touchedTextNodes.clear();
+}
+
+async function applyPreferredLanguage(targetLanguage: LanguageCode, jobId: number) {
+  const nodes = collectTranslatableTextNodes();
+  if (nodes.length === 0) return;
+
+  const textToNodes = new Map<string, Text[]>();
+  for (const node of nodes) {
+    const original = node.nodeValue ?? '';
+    if (!originalTextByNode.has(node)) {
+      originalTextByNode.set(node, original);
+    }
+
+    const { core } = splitWhitespace(original);
+    const key = core.trim();
+    if (!key) continue;
+
+    const arr = textToNodes.get(key) ?? [];
+    arr.push(node);
+    textToNodes.set(key, arr);
+  }
+
+  const cache = translationCache[targetLanguage] ?? translationCache.en;
+  const uniqueKeys = Array.from(textToNodes.keys());
+  const needsTranslation = uniqueKeys.filter((k) => !cache.has(k));
+
+  for (const batch of chunk(needsTranslation, TRANSLATE_CHUNK_SIZE)) {
+    if (jobId !== activeTranslateJobId) return;
+    const translated = await requestTranslations(batch, targetLanguage);
+    if (jobId !== activeTranslateJobId) return;
+    for (let i = 0; i < batch.length; i += 1) {
+      cache.set(batch[i], translated[i] ?? batch[i]);
+    }
+  }
+
+  if (jobId !== activeTranslateJobId) return;
+
+  for (const [key, nodeList] of textToNodes) {
+    const translated = cache.get(key) ?? key;
+    for (const node of nodeList) {
+      const original = originalTextByNode.get(node) ?? (node.nodeValue ?? '');
+      const { leading, trailing } = splitWhitespace(original);
+      node.nodeValue = `${leading}${translated}${trailing}`;
+      touchedTextNodes.add(node);
+    }
+  }
+}
+
+async function applyPageLanguageMode(mode: PageLanguageMode, targetLanguage: LanguageCode) {
+  const jobId = startTranslationJob();
+
+  if (mode === 'original' || targetLanguage === 'en') {
+    restoreOriginalLanguage();
+    return;
+  }
+
+  restoreOriginalLanguage();
+  await applyPreferredLanguage(targetLanguage, jobId);
+}
+
+function schedulePreferredLanguageRefresh(delayMs: number = 1200) {
+  if (currentPageLanguageMode !== 'preferred') return;
+  if (preferredLanguageRefreshTimer) {
+    clearTimeout(preferredLanguageRefreshTimer);
+  }
+  preferredLanguageRefreshTimer = setTimeout(() => {
+    void applyPageLanguageMode('preferred', preferredPageLanguage);
+  }, delayMs);
+}
 
 export default defineContentScript({
   matches: ['<all_urls>'],
@@ -56,6 +254,10 @@ function initInterpreter() {
 
     // Notify sidepanel that page is loaded
     notifyPageLoaded();
+
+    window.addEventListener('load', () => {
+      schedulePreferredLanguageRefresh(1200);
+    });
   } catch (error) {
     console.error('[IEEE Extension] Failed to initialize:', error);
   }
@@ -484,6 +686,19 @@ function initMessageListener() {
       } else {
         removeAccessibilityStyles();
       }
+    } else if (message.type === 'SET_PAGE_LANGUAGE_MODE') {
+      const mode: PageLanguageMode = message.mode === 'original' ? 'original' : 'preferred';
+      const lang: LanguageCode = message.language === 'zh'
+        ? 'zh'
+        : message.language === 'ms'
+          ? 'ms'
+          : message.language === 'ta'
+            ? 'ta'
+            : 'en';
+      currentPageLanguageMode = mode;
+      preferredPageLanguage = lang;
+      applyPageLanguageMode(currentPageLanguageMode, preferredPageLanguage);
+      schedulePreferredLanguageRefresh(450);
     }
   });
 }
@@ -774,6 +989,7 @@ function notifyPageLoaded() {
   // Wait a bit for page to fully load
   setTimeout(() => {
     handleGetPageContent();
+    schedulePreferredLanguageRefresh(900);
   }, 1000);
 }
 
@@ -788,9 +1004,19 @@ async function initAccessibilityFeatures() {
     if (preferences) {
       console.log('[IEEE Extension] Applying accessibility preferences:', preferences);
       applyAccessibilityStyles(preferences);
+      preferredPageLanguage = preferences.language ?? DEFAULT_USER_PREFERENCES.language;
+      if (currentPageLanguageMode === 'preferred') {
+        await applyPageLanguageMode(currentPageLanguageMode, preferredPageLanguage);
+        schedulePreferredLanguageRefresh(1500);
+      }
     } else {
       console.log('[IEEE Extension] No preferences found, using defaults');
       removeAccessibilityStyles();
+      preferredPageLanguage = DEFAULT_USER_PREFERENCES.language;
+      if (currentPageLanguageMode === 'preferred') {
+        await applyPageLanguageMode(currentPageLanguageMode, preferredPageLanguage);
+        schedulePreferredLanguageRefresh(1500);
+      }
     }
 
     // Watch for preference changes (even if preferences aren't set yet).
@@ -798,8 +1024,18 @@ async function initAccessibilityFeatures() {
       if (newPreferences) {
         console.log('[IEEE Extension] Preferences updated:', newPreferences);
         applyAccessibilityStyles(newPreferences);
+        preferredPageLanguage = newPreferences.language ?? DEFAULT_USER_PREFERENCES.language;
+        if (currentPageLanguageMode === 'preferred') {
+          void applyPageLanguageMode(currentPageLanguageMode, preferredPageLanguage);
+          schedulePreferredLanguageRefresh(800);
+        }
       } else {
         removeAccessibilityStyles();
+        preferredPageLanguage = DEFAULT_USER_PREFERENCES.language;
+        if (currentPageLanguageMode === 'preferred') {
+          void applyPageLanguageMode(currentPageLanguageMode, preferredPageLanguage);
+          schedulePreferredLanguageRefresh(800);
+        }
       }
     });
   } catch (error) {
@@ -912,3 +1148,4 @@ function applyAccessibilityStyles(preferences: UserPreferences) {
 
   console.log('[IEEE Extension] Accessibility styles applied');
 }
+
