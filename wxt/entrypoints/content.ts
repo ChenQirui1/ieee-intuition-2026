@@ -558,6 +558,15 @@ function initMagnifyingGlass() {
     }
     lastCaptureAt = now;
     captureInFlight = true;
+
+    // Prevent feedback loops: if the lens is visible during captureVisibleTab,
+    // it will be captured into the snapshot and then re-magnified, creating the
+    // appearance that zoom keeps increasing. Hide the lens just for the capture.
+    const prevVisibility = magnifyingLens.style.visibility;
+    const shouldHideLens = magnifyingLens.style.display !== 'none';
+    if (shouldHideLens) {
+      magnifyingLens.style.visibility = 'hidden';
+    }
     try {
       const response = await browser.runtime.sendMessage({ type: 'CAPTURE_VISIBLE_TAB' });
       if (response?.ok && response.dataUrl) {
@@ -574,6 +583,9 @@ function initMagnifyingGlass() {
     } catch (error) {
       console.warn('[IEEE Extension] Snapshot capture failed:', error);
     } finally {
+      if (shouldHideLens) {
+        magnifyingLens.style.visibility = prevVisibility;
+      }
       captureInFlight = false;
     }
   };
@@ -648,7 +660,11 @@ function initMagnifyingGlass() {
     lastY = event.clientY;
     if (magnifyingMode) {
       scheduleRender();
-      requestSnapshotCapture();
+      // Keep the magnification stable by avoiding continuous viewport captures.
+      // Snapshot refreshes happen on enable + scroll/resize.
+      if (!snapshotReady) {
+        requestSnapshotCapture();
+      }
     }
   });
 
