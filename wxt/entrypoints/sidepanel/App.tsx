@@ -107,10 +107,6 @@ function splitWhitespace(value: string): { leading: string; core: string; traili
   };
 }
 
-interface PageSummary {
-  bullets: string[];
-}
-
 interface Heading {
   text: string;
   level: number;
@@ -133,6 +129,24 @@ interface UserPreferences {
 
 const UI_STRINGS: Record<LanguageCode, Record<string, string>> = {
   en: {
+    mode_easy_read: 'Easy Read',
+    mode_checklist: 'Checklist',
+    mode_step_by_step: 'Step-by-step',
+    header_short_summary: 'Short Summary',
+    header_key_points: 'Key Points',
+    header_warnings: 'Warnings',
+    header_important_links: 'Important Links',
+    header_glossary: 'Glossary',
+    header_more_details: 'More Details',
+    header_goal: 'Goal',
+    header_requirements: 'Requirements',
+    header_documents: 'Documents',
+    header_fees: 'Fees',
+    header_deadlines: 'Deadlines',
+    header_actions: 'Actions',
+    header_common_mistakes: 'Common Mistakes',
+    header_steps: 'Steps',
+    header_finish_check: 'Finish Check',
     error: 'Error',
     tab_summary: 'Summary',
     tab_headings: 'Headings',
@@ -170,6 +184,24 @@ const UI_STRINGS: Record<LanguageCode, Record<string, string>> = {
     text_error: 'Sorry, I could not process your request. Please make sure the backend server is running.',
   },
   zh: {
+    mode_easy_read: '易读',
+    mode_checklist: '清单',
+    mode_step_by_step: '一步一步',
+    header_short_summary: '简短摘要',
+    header_key_points: '要点',
+    header_warnings: '警告',
+    header_important_links: '重要链接',
+    header_glossary: '词汇表',
+    header_more_details: '更多详情',
+    header_goal: '目标',
+    header_requirements: '要求',
+    header_documents: '文件',
+    header_fees: '费用',
+    header_deadlines: '截止日期',
+    header_actions: '行动',
+    header_common_mistakes: '常见错误',
+    header_steps: '步骤',
+    header_finish_check: '完成检查',
     error: '错误',
     tab_summary: '摘要',
     tab_headings: '目录',
@@ -207,6 +239,24 @@ const UI_STRINGS: Record<LanguageCode, Record<string, string>> = {
     text_error: '抱歉，我无法处理你的请求。请确认后端服务器正在运行。',
   },
   ms: {
+    mode_easy_read: 'Mudah Baca',
+    mode_checklist: 'Senarai semak',
+    mode_step_by_step: 'Langkah demi langkah',
+    header_short_summary: 'Ringkasan Ringkas',
+    header_key_points: 'Perkara Utama',
+    header_warnings: 'Amaran',
+    header_important_links: 'Pautan Penting',
+    header_glossary: 'Glosari',
+    header_more_details: 'Lagi Butiran',
+    header_goal: 'Matlamat',
+    header_requirements: 'Keperluan',
+    header_documents: 'Dokumen',
+    header_fees: 'Yuran',
+    header_deadlines: 'Tarikh akhir',
+    header_actions: 'Tindakan',
+    header_common_mistakes: 'Kesilapan Biasa',
+    header_steps: 'Langkah',
+    header_finish_check: 'Selesai Semak',
     error: 'Ralat',
     tab_summary: 'Ringkasan',
     tab_headings: 'Kandungan',
@@ -244,6 +294,24 @@ const UI_STRINGS: Record<LanguageCode, Record<string, string>> = {
     text_error: 'Maaf, saya tidak dapat memproses permintaan anda. Pastikan pelayan belakang sedang berjalan.',
   },
   ta: {
+    mode_easy_read: 'எளிதாக படிக்கலாம்',
+    mode_checklist: 'சரிபார்ப்பு பட்டியல்',
+    mode_step_by_step: 'படி-படி',
+    header_short_summary: 'சுருக்கமான சுருக்கம்',
+    header_key_points: 'முக்கிய புள்ளிகள்',
+    header_warnings: 'எச்சரிக்கைகள்',
+    header_important_links: 'முக்கியமான இணைப்புகள்',
+    header_glossary: 'சொற்களஞ்சியம்',
+    header_more_details: 'மேலும் விவரங்கள்',
+    header_goal: 'இலக்கு',
+    header_requirements: 'தேவைகள்',
+    header_documents: 'ஆவணங்கள்',
+    header_fees: 'கட்டணம்',
+    header_deadlines: 'காலக்கெடு',
+    header_actions: 'செயல்கள்',
+    header_common_mistakes: 'பொதுவான தவறுகள்',
+    header_steps: 'படிகள்',
+    header_finish_check: 'சோதனையை முடிக்கவும்',
     error: 'பிழை',
     tab_summary: 'சுருக்கம்',
     tab_headings: 'தலைப்புகள்',
@@ -301,6 +369,13 @@ const LANGUAGE_BADGE: Record<LanguageCode, string> = {
   zh: '中文',
   ms: 'MS',
   ta: 'தமிழ்',
+};
+
+const TTS_LANG: Record<LanguageCode, string> = {
+  en: 'en-US',
+  zh: 'zh-CN',
+  ms: 'ms-MY',
+  ta: 'ta-IN',
 };
 
 const SUPPORTED_LANGUAGES: LanguageCode[] = ['en', 'zh', 'ms', 'ta'];
@@ -412,8 +487,6 @@ function App() {
 
   const ui = UI_STRINGS[language] ?? UI_STRINGS.en;
   const t = (key: keyof typeof UI_STRINGS.en) => ui[key] ?? UI_STRINGS.en[key];
-  const summary: PageSummary | null =
-    easyRead && easyRead.key_points.length > 0 ? { bullets: easyRead.key_points } : null;
 
   const [ttsTarget, setTtsTarget] = useState<
     | { kind: 'summary' }
@@ -504,26 +577,12 @@ function App() {
     const getCurrentUrl = async () => {
       try {
         const tabs = await browser.tabs.query({ active: true, currentWindow: true });
-        if (tabs[0]?.url) {
-          setCurrentUrl(tabs[0].url);
-          // Load cached context for this URL
-          const cachedPageId = await storage.getItem<string>(`session:pageId:${tabs[0].url}`);
-          const cachedSimplId = await storage.getItem<string>(`session:simplificationId:${tabs[0].url}`);
-          if (cachedPageId) setPageId(cachedPageId);
-          if (cachedSimplId) setSimplificationId(cachedSimplId);
-
-           // Load chat messages for this URL
-           const savedMessages = await storage.getItem<Message[]>(`local:chatMessages:${tabs[0].url}`);
-           if (savedMessages && Array.isArray(savedMessages)) {
-             console.log('[Sidepanel] Loaded saved messages:', savedMessages.length);
-             const normalized = normalizeStoredMessages(savedMessages);
-             setMessagesRaw(normalized);
-             setMessages(normalized);
-           }
-          }
-        } catch (error) {
-          console.error('[Sidepanel] Failed to get current URL:', error);
-        }
+        const url = tabs[0]?.url;
+        if (!url) return;
+        setCurrentUrl((prev) => (prev === url ? prev : url));
+      } catch (error) {
+        console.error('[Sidepanel] Failed to get current URL:', error);
+      }
     };
     getCurrentUrl();
 
@@ -536,6 +595,7 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!currentUrl) return;
     setReadingMode('easy_read');
     setActionAssistDismissed(false);
     setChecklistDone({});
@@ -554,14 +614,86 @@ function App() {
     setHeadings([]);
     setIsSimplifying(false);
     setSimplifyingMode(null);
+    setPageTitle('');
     setPageParagraphs([]);
     setPageInteractions([]);
+    setPageId('');
+    setSimplificationId('');
+    setError('');
     localizedEasyReadRef.current = { en: null, zh: null, ms: null, ta: null };
     localizedChecklistRef.current = { en: null, zh: null, ms: null, ta: null };
     localizedStepByStepRef.current = { en: null, zh: null, ms: null, ta: null };
     localizedHeadingsRef.current = { en: null, zh: null, ms: null, ta: null };
     localizedMessagesRef.current = { en: null, zh: null, ms: null, ta: null };
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const cachedPageId = await storage.getItem<string>(`session:pageId:${currentUrl}`);
+        const cachedSimplId = await storage.getItem<string>(`session:simplificationId:${currentUrl}`);
+        const savedMessages = await storage.getItem<Message[]>(`local:chatMessages:${currentUrl}`);
+
+        if (cancelled) return;
+
+        if (cachedPageId) setPageId(cachedPageId);
+        if (cachedSimplId) setSimplificationId(cachedSimplId);
+
+        if (savedMessages && Array.isArray(savedMessages) && savedMessages.length > 0) {
+          const normalized = normalizeStoredMessages(savedMessages);
+          setMessagesRaw(normalized);
+          setMessages(normalized);
+        }
+      } catch (contextError) {
+        console.warn('[Sidepanel] Failed to load cached context:', contextError);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [currentUrl]);
+
+  useEffect(() => {
+    const syncUrlFromActiveTab = async () => {
+      try {
+        const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+        const url = tabs[0]?.url;
+        if (!url) return;
+        setCurrentUrl((prev) => (prev === url ? prev : url));
+      } catch (error) {
+        console.warn('[Sidepanel] Failed to sync URL from active tab:', error);
+      }
+    };
+
+    const handleActivated = () => {
+      void syncUrlFromActiveTab();
+    };
+
+    const handleUpdated = (_tabId: number, changeInfo: any, tab: any) => {
+      // Only react to actual URL changes for the active tab; this avoids spamming during load.
+      if (!tab?.active) return;
+      if (!changeInfo?.url) return;
+      void syncUrlFromActiveTab();
+    };
+
+    try {
+      browser.tabs.onActivated.addListener(handleActivated as any);
+      browser.tabs.onUpdated.addListener(handleUpdated as any);
+    } catch (error) {
+      console.warn('[Sidepanel] Failed to attach tab listeners:', error);
+    }
+
+    void syncUrlFromActiveTab();
+
+    return () => {
+      try {
+        browser.tabs.onActivated.removeListener(handleActivated as any);
+        browser.tabs.onUpdated.removeListener(handleUpdated as any);
+      } catch {
+        // ignore
+      }
+    };
+  }, []);
 
   const loadPreferences = async () => {
     try {
@@ -690,9 +822,17 @@ function App() {
   const requestPageSummary = async () => {
     try {
       const tabs = await browser.tabs.query({ active: true, currentWindow: true });
-      if (tabs[0]?.id) {
-        browser.tabs.sendMessage(tabs[0].id, { type: 'GET_PAGE_CONTENT' });
+      const tab = tabs[0];
+      if (!tab?.id) return;
+
+      // If the stored URL is stale, update it first so summary/chat keys stay in sync.
+      const tabUrl = typeof tab.url === 'string' ? tab.url : '';
+      if (tabUrl && tabUrl !== currentUrl) {
+        setCurrentUrl((prev) => (prev === tabUrl ? prev : tabUrl));
+        return;
       }
+
+      browser.tabs.sendMessage(tab.id, { type: 'GET_PAGE_CONTENT' });
     } catch (error) {
       console.error('[Sidepanel] Failed to request page summary:', error);
     }
@@ -1881,16 +2021,148 @@ function App() {
 
   const startSummarySpeech = () => {
     if (!tts.isSupported) return;
-    const bullets = summary?.bullets ?? [];
-    if (!bullets.length) return;
-    const ok = tts.speak(bullets);
+
+    const collectEasyReadSpeech = (value: EasyReadOutput): string[] => {
+      const out: string[] = [];
+      if (value.about) {
+        out.push(t('header_short_summary'));
+        out.push(value.about);
+      }
+      if (value.key_points?.length) {
+        out.push(t('header_key_points'));
+        out.push(...value.key_points);
+      }
+      if (value.warnings?.length) {
+        out.push(t('header_warnings'));
+        out.push(...value.warnings);
+      }
+      if (value.important_links?.length) {
+        out.push(t('header_important_links'));
+        out.push(
+          ...value.important_links
+            .map((l) => (l.label || l.url || '').trim())
+            .filter(Boolean)
+        );
+      }
+      if (value.glossary?.length) {
+        out.push(t('header_glossary'));
+        out.push(
+          ...value.glossary
+            .map((g) => `${g.term}`.trim() && `${g.term}. ${g.simple}`.trim())
+            .filter(Boolean)
+        );
+      }
+      if (value.sections?.length) {
+        out.push(t('header_more_details'));
+        for (const section of value.sections) {
+          if (section.heading) out.push(section.heading);
+          if (section.bullets?.length) out.push(...section.bullets);
+        }
+      }
+      return out.map((s) => s.trim()).filter(Boolean);
+    };
+
+    const collectChecklistSpeech = (value: ChecklistGuide): string[] => {
+      const out: string[] = [];
+      out.push(t('mode_checklist'));
+      if (value.goal) {
+        out.push(t('header_goal'));
+        out.push(value.goal);
+      }
+
+      const pushItems = (items: Array<{ item: string; details?: string }>) => {
+        for (const it of items) {
+          if (it.item) out.push(it.item);
+          if (it.details) out.push(it.details);
+        }
+      };
+
+      if (value.requirements?.length) {
+        out.push(t('header_requirements'));
+        pushItems(value.requirements);
+      }
+      if (value.documents?.length) {
+        out.push(t('header_documents'));
+        pushItems(value.documents);
+      }
+
+      if (value.fees?.length) {
+        out.push(t('header_fees'));
+        for (const fee of value.fees) {
+          const line = fee.amount ? `${fee.item}. ${fee.amount}` : fee.item;
+          if (line) out.push(line);
+        }
+      }
+
+      if (value.deadlines?.length) {
+        out.push(t('header_deadlines'));
+        for (const d of value.deadlines) {
+          const line = d.date ? `${d.item}. ${d.date}` : d.item;
+          if (line) out.push(line);
+        }
+      }
+
+      if (value.actions?.length) {
+        out.push(t('header_actions'));
+        for (const act of value.actions) {
+          if (act.item) out.push(act.item);
+        }
+      }
+
+      if (value.common_mistakes?.length) {
+        out.push(t('header_common_mistakes'));
+        out.push(...value.common_mistakes);
+      }
+
+      return out.map((s) => s.trim()).filter(Boolean);
+    };
+
+    const collectStepByStepSpeech = (value: StepByStepGuide): string[] => {
+      const out: string[] = [];
+      out.push(t('mode_step_by_step'));
+      if (value.goal) {
+        out.push(t('header_goal'));
+        out.push(value.goal);
+      }
+
+      if (value.steps?.length) out.push(t('header_steps'));
+      for (let idx = 0; idx < (value.steps ?? []).length; idx += 1) {
+        const s = value.steps[idx];
+        const stepNum = s.step ?? idx + 1;
+        const title = s.title ? `${stepNum}. ${s.title}` : `${stepNum}.`;
+        if (title) out.push(title);
+        if (s.what_to_do) out.push(s.what_to_do);
+        if (s.where_to_click) out.push(s.where_to_click);
+        if (s.tips?.length) out.push(...s.tips);
+      }
+
+      if (value.finish_check?.length) {
+        out.push(t('header_finish_check'));
+        out.push(...value.finish_check);
+      }
+
+      return out.map((s) => s.trim()).filter(Boolean);
+    };
+
+    let toSpeak: string[] = [];
+    if (readingMode === 'easy_read' && easyRead) {
+      toSpeak = collectEasyReadSpeech(easyRead);
+    } else if (readingMode === 'checklist' && checklistGuide) {
+      toSpeak = collectChecklistSpeech(checklistGuide);
+    } else if (readingMode === 'step_by_step' && stepByStepGuide) {
+      toSpeak = collectStepByStepSpeech(stepByStepGuide);
+    }
+
+    if (!toSpeak.length) return;
+
+    const ok = tts.speak(toSpeak, { lang: TTS_LANG[language] });
     if (ok) setTtsTarget({ kind: 'summary' });
   };
 
   const startHeadingsSpeech = () => {
     if (!tts.isSupported) return;
     if (!headings.length) return;
-    const ok = tts.speak(headings.map((h) => h.text));
+    const ok = tts.speak(headings.map((h) => h.text), { lang: TTS_LANG[language] });
     if (ok) setTtsTarget({ kind: 'headings' });
   };
 
@@ -1898,7 +2170,7 @@ function App() {
     if (!tts.isSupported) return;
     const content = typeof message.content === 'string' ? message.content.trim() : '';
     if (!content) return;
-    const ok = tts.speak(content);
+    const ok = tts.speak(content, { lang: TTS_LANG[language] });
     if (ok) setTtsTarget({ kind: 'chat', id: message.id });
   };
 
@@ -1910,16 +2182,21 @@ function App() {
     if (tts.status !== 'idle') return; // Don't interrupt manual playback.
     const content = typeof message.content === 'string' ? message.content.trim() : '';
     if (!content) return;
-    const ok = tts.speak(content);
+    const ok = tts.speak(content, { lang: TTS_LANG[language] });
     if (ok) setTtsTarget({ kind: 'chat', id: message.id });
   };
 
   const renderTopSpeakerControls = (kind: 'summary' | 'headings') => {
     const isActive = ttsTarget?.kind === kind && tts.status !== 'idle';
-    const canStart =
-      kind === 'summary'
-        ? !!summary?.bullets?.length
-        : headings.length > 0;
+    const canStart = kind === 'summary'
+      ? (readingMode === 'easy_read'
+          ? !!easyRead
+          : readingMode === 'checklist'
+            ? !!checklistGuide
+            : readingMode === 'step_by_step'
+              ? !!stepByStepGuide
+              : false)
+      : headings.length > 0;
 
     const label = t('listen');
 
@@ -2072,7 +2349,7 @@ function App() {
                       : 'text-gray-700 hover:bg-gray-50'
                   }`}
                 >
-                  Easy Read
+                  {t('mode_easy_read')}
                 </button>
                 <button
                   onClick={() => void selectReadingMode('checklist')}
@@ -2082,7 +2359,7 @@ function App() {
                       : 'text-gray-700 hover:bg-gray-50'
                   }`}
                 >
-                  Checklist
+                  {t('mode_checklist')}
                 </button>
                 <button
                   onClick={() => void selectReadingMode('step_by_step')}
@@ -2092,7 +2369,7 @@ function App() {
                       : 'text-gray-700 hover:bg-gray-50'
                   }`}
                 >
-                  Step-by-step
+                  {t('mode_step_by_step')}
                 </button>
               </div>
             </div>
@@ -2152,13 +2429,13 @@ function App() {
                   <div className="space-y-4">
                     {easyRead.about ? (
                       <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-                        <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Short Summary</p>
+                        <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">{t('header_short_summary')}</p>
                         <p className="mt-2 text-sm leading-relaxed text-gray-700">{easyRead.about}</p>
                       </div>
                     ) : null}
 
                     <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-                      <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Key Points</p>
+                      <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">{t('header_key_points')}</p>
                       <ul className="mt-3 space-y-2">
                         {(easyRead.key_points || []).map((bullet, idx) => (
                           <li key={idx} className="flex items-start gap-3">
@@ -2171,7 +2448,7 @@ function App() {
 
                     {easyRead.warnings && easyRead.warnings.length > 0 ? (
                       <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 shadow-sm">
-                        <p className="text-xs font-semibold text-amber-900 uppercase tracking-wide">Warnings</p>
+                        <p className="text-xs font-semibold text-amber-900 uppercase tracking-wide">{t('header_warnings')}</p>
                         <ul className="mt-3 space-y-2">
                           {easyRead.warnings.slice(0, 6).map((w, idx) => (
                             <li key={idx} className="flex items-start gap-3">
@@ -2185,7 +2462,7 @@ function App() {
 
                     {easyRead.important_links && easyRead.important_links.length > 0 ? (
                       <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-                        <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Important Links</p>
+                        <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">{t('header_important_links')}</p>
                         <div className="mt-3 space-y-2">
                           {easyRead.important_links.slice(0, 6).map((l, idx) => (
                             <button
@@ -2204,7 +2481,7 @@ function App() {
                     {easyRead.glossary && easyRead.glossary.length > 0 ? (
                       <details className="rounded-xl border border-gray-200 bg-white shadow-sm">
                         <summary className="cursor-pointer select-none px-4 py-3 flex items-center justify-between">
-                          <span className="text-sm font-semibold text-gray-900">Glossary</span>
+                          <span className="text-sm font-semibold text-gray-900">{t('header_glossary')}</span>
                           <span className="text-xs text-gray-500">{easyRead.glossary.length} terms</span>
                         </summary>
                         <div className="px-4 pb-4 divide-y divide-gray-100">
@@ -2221,7 +2498,7 @@ function App() {
                     {easyRead.sections && easyRead.sections.length > 0 ? (
                       <details className="rounded-xl border border-gray-200 bg-white shadow-sm">
                         <summary className="cursor-pointer select-none px-4 py-3 flex items-center justify-between">
-                          <span className="text-sm font-semibold text-gray-900">More Details</span>
+                          <span className="text-sm font-semibold text-gray-900">{t('header_more_details')}</span>
                           <span className="text-xs text-gray-500">{easyRead.sections.length} sections</span>
                         </summary>
                         <div className="px-4 pb-4 space-y-4">
@@ -2559,7 +2836,7 @@ function App() {
 
                     {stepByStepGuide.finish_check.length > 0 ? (
                       <div className="rounded-xl border border-green-200 bg-green-50 p-4 shadow-sm">
-                        <p className="text-xs font-semibold text-green-900 uppercase tracking-wide">Finish Check</p>
+                        <p className="text-xs font-semibold text-green-900 uppercase tracking-wide">{t('header_finish_check')}</p>
                         <ul className="mt-3 space-y-2">
                           {stepByStepGuide.finish_check.map((c, idx) => (
                             <li key={idx} className="flex items-start gap-3">
@@ -2654,7 +2931,7 @@ function App() {
                           : 'text-gray-700 hover:bg-gray-100'
                       }`}
                     >
-                      A
+                      ORIG
                     </button>
                     <button
                       type="button"
@@ -2806,7 +3083,7 @@ function App() {
                           : 'text-gray-700 hover:bg-gray-100'
                       }`}
                     >
-                      A
+                      ORIG
                     </button>
                     <button
                       type="button"
@@ -2890,15 +3167,21 @@ function App() {
             ) : (
               <>
                 {messages.map((message) => {
-                  const isAssistant = message.role === 'assistant';
                   const isActive =
-                    isAssistant
-                    && ttsTarget?.kind === 'chat'
+                    ttsTarget?.kind === 'chat'
                     && ttsTarget.id === message.id
                     && tts.status !== 'idle';
                   const safeContent = typeof message.content === 'string' ? message.content : String((message as any)?.content ?? '');
                   const canSpeak = tts.isSupported && !!safeContent.trim();
                   const timeLabel = formatTimestamp((message as any)?.timestamp ?? message.timestamp);
+
+                  const ttsButtonClass = message.role === 'user'
+                    ? 'border border-blue-200 bg-white text-blue-700 hover:bg-blue-50 focus:ring-blue-500'
+                    : 'border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 focus:ring-blue-500';
+
+                  const ttsButtonActiveClass = message.role === 'user'
+                    ? 'border border-blue-200 bg-white text-blue-800 hover:bg-blue-50 focus:ring-blue-500'
+                    : 'border border-gray-200 bg-white text-gray-800 hover:bg-gray-50 focus:ring-blue-500';
 
                   return (
                     <div
@@ -2910,7 +3193,7 @@ function App() {
                           message.role === 'user'
                             ? 'bg-blue-600 text-white'
                             : 'bg-white text-gray-900 shadow-md border border-gray-200'
-                        } ${isAssistant ? 'pr-12' : ''}`}
+                        } ${canSpeak ? 'pr-12' : ''}`}
                       >
                         <p className="text-base leading-relaxed break-words">{message.content}</p>
                         <p
@@ -2921,14 +3204,14 @@ function App() {
                           {timeLabel}
                         </p>
 
-                        {isAssistant && (
+                        {canSpeak && (
                           <div className="absolute top-2 right-2 flex flex-col items-center gap-2">
                             {!isActive ? (
                               <button
                                 type="button"
                                 onClick={() => startChatMessageSpeech(message)}
                                 disabled={!canSpeak}
-                                className="p-2 rounded-lg border border-gray-200 bg-white text-gray-700 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                className={`p-2 rounded-lg shadow-sm focus:outline-none focus:ring-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors ${ttsButtonClass}`}
                                 title={t('listen')}
                                 aria-label={t('listen')}
                               >
@@ -2939,7 +3222,7 @@ function App() {
                                 <button
                                   type="button"
                                   onClick={() => (tts.status === 'speaking' ? tts.pause() : tts.resume())}
-                                  className="p-2 rounded-lg border border-gray-200 bg-white text-gray-800 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
+                                  className={`p-2 rounded-lg shadow-sm focus:outline-none focus:ring-2 transition-colors ${ttsButtonActiveClass}`}
                                   title={tts.status === 'speaking' ? t('pause') : t('play')}
                                   aria-label={tts.status === 'speaking' ? t('pause') : t('play')}
                                 >
@@ -2952,7 +3235,7 @@ function App() {
                                 <button
                                   type="button"
                                   onClick={tts.stop}
-                                  className="p-2 rounded-lg border border-gray-200 bg-white text-gray-800 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
+                                  className={`p-2 rounded-lg shadow-sm focus:outline-none focus:ring-2 transition-colors ${ttsButtonActiveClass}`}
                                   title={t('stop')}
                                   aria-label={t('stop')}
                                 >
@@ -3046,7 +3329,7 @@ function App() {
                           : 'text-gray-700 hover:bg-gray-100'
                       }`}
                     >
-                      A
+                      ORIG
                     </button>
                     <button
                       type="button"
