@@ -59,7 +59,29 @@ interface UserPreferences {
   hideAds: boolean;
   simplifyLanguage: boolean;
   showBreadcrumbs: boolean;
+  ttsRate: number;
+  autoReadAssistant: boolean;
   profileName: string;
+}
+
+const DEFAULT_USER_PREFERENCES: UserPreferences = {
+  fontSize: 'standard',
+  linkStyle: 'default',
+  contrastMode: 'standard',
+  hideAds: false,
+  simplifyLanguage: false,
+  showBreadcrumbs: false,
+  ttsRate: 1,
+  autoReadAssistant: false,
+  profileName: 'My Profile',
+};
+
+const SUPPORTED_TTS_RATES = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
+
+function coerceTtsRate(value: unknown): number {
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n)) return DEFAULT_USER_PREFERENCES.ttsRate;
+  return SUPPORTED_TTS_RATES.includes(n as any) ? n : DEFAULT_USER_PREFERENCES.ttsRate;
 }
 
 function App() {
@@ -86,6 +108,10 @@ function App() {
     | { kind: 'chat'; id: string }
     | null
   >(null);
+
+  const [autoReadAssistantReplies, setAutoReadAssistantReplies] = useState<boolean>(
+    DEFAULT_USER_PREFERENCES.autoReadAssistant,
+  );
 
   useEffect(() => {
     if (tts.status === 'idle') {
@@ -172,16 +198,20 @@ function App() {
   const loadPreferences = async () => {
     try {
       const preferences = await storage.getItem<UserPreferences>('sync:userPreferences');
-      if (preferences) {
-        applyZoom(preferences.fontSize);
+      applyZoom(preferences?.fontSize ?? DEFAULT_USER_PREFERENCES.fontSize);
+      tts.setRate(coerceTtsRate(preferences?.ttsRate));
+      setAutoReadAssistantReplies(
+        preferences?.autoReadAssistant ?? DEFAULT_USER_PREFERENCES.autoReadAssistant,
+      );
 
-        // Watch for preference changes
-        storage.watch<UserPreferences>('sync:userPreferences', (newPreferences) => {
-          if (newPreferences) {
-            applyZoom(newPreferences.fontSize);
-          }
-        });
-      }
+      // Watch for preference changes (even if preferences aren't set yet).
+      storage.watch<UserPreferences>('sync:userPreferences', (newPreferences) => {
+        applyZoom(newPreferences?.fontSize ?? DEFAULT_USER_PREFERENCES.fontSize);
+        tts.setRate(coerceTtsRate(newPreferences?.ttsRate));
+        setAutoReadAssistantReplies(
+          newPreferences?.autoReadAssistant ?? DEFAULT_USER_PREFERENCES.autoReadAssistant,
+        );
+      });
     } catch (error) {
       console.error('[Sidepanel] Failed to load preferences:', error);
     }
@@ -197,16 +227,34 @@ function App() {
     }
   };
 
+  const applyPreferencesToActiveTab = async (preferences: UserPreferences) => {
+    try {
+      const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+      const tabId = tabs[0]?.id;
+      if (!tabId) return;
+
+      await browser.tabs.sendMessage(tabId, {
+        type: 'APPLY_USER_PREFERENCES',
+        preferences,
+      });
+    } catch {
+      // Content script may not be ready (or not allowed on this page); storage watch still covers most cases.
+    }
+  };
+
   const handleZoomChange = async (fontSize: 'standard' | 'large' | 'extra-large') => {
     try {
       // Load current preferences
       const preferences = await storage.getItem<UserPreferences>('sync:userPreferences');
-      if (preferences) {
-        // Update fontSize and save
-        const updatedPreferences = { ...preferences, fontSize };
-        await storage.setItem('sync:userPreferences', updatedPreferences);
-        applyZoom(fontSize);
-      }
+      // Update fontSize and save (create defaults if missing so zoom works even without onboarding).
+      const updatedPreferences: UserPreferences = {
+        ...DEFAULT_USER_PREFERENCES,
+        ...((preferences ?? {}) as Partial<UserPreferences>),
+        fontSize,
+      };
+      await storage.setItem('sync:userPreferences', updatedPreferences);
+      applyZoom(fontSize);
+      await applyPreferencesToActiveTab(updatedPreferences);
     } catch (error) {
       console.error('[Sidepanel] Failed to update zoom:', error);
     }
@@ -350,6 +398,7 @@ function App() {
         const finalMessages = [...updatedMessages, assistantMessage];
         setMessages(finalMessages);
         await storage.setItem(`local:chatMessages:${currentUrl}`, finalMessages);
+        maybeAutoReadAssistantReply(assistantMessage);
       } catch (error) {
         console.error('[Sidepanel] Failed to caption image:', error);
         setError(error instanceof Error ? error.message : 'Failed to caption image');
@@ -363,6 +412,7 @@ function App() {
         const finalMessages = [...updatedMessages, errorMessage];
         setMessages(finalMessages);
         await storage.setItem(`local:chatMessages:${currentUrl}`, finalMessages);
+        maybeAutoReadAssistantReply(errorMessage);
       } finally {
         setIsLoading(false);
       }
@@ -419,6 +469,7 @@ function App() {
 
       // Save to local storage
       await storage.setItem(`local:chatMessages:${currentUrl}`, finalMessages);
+      maybeAutoReadAssistantReply(assistantMessage);
     } catch (error) {
       console.error('[Sidepanel] Failed to get AI response:', error);
       setError(error instanceof Error ? error.message : 'Failed to get response');
@@ -432,6 +483,7 @@ function App() {
       const finalMessages = [...updatedMessages, errorMessage];
       setMessages(finalMessages);
       await storage.setItem(`local:chatMessages:${currentUrl}`, finalMessages);
+      maybeAutoReadAssistantReply(errorMessage);
     } finally {
       setIsLoading(false);
     }
@@ -528,6 +580,7 @@ function App() {
 
       // Save to local storage
       await storage.setItem(`local:chatMessages:${currentUrl}`, finalMessages);
+      maybeAutoReadAssistantReply(assistantMessage);
     } catch (error) {
       console.error('[Sidepanel] Failed to get AI response:', error);
       setError(error instanceof Error ? error.message : 'Failed to get response');
@@ -541,6 +594,7 @@ function App() {
       const finalMessages = [...updatedMessages, errorMessage];
       setMessages(finalMessages);
       await storage.setItem(`local:chatMessages:${currentUrl}`, finalMessages);
+      maybeAutoReadAssistantReply(errorMessage);
     } finally {
       setIsLoading(false);
     }
@@ -577,6 +631,18 @@ function App() {
 
   const startChatMessageSpeech = (message: Message) => {
     if (!tts.isSupported) return;
+    const content = typeof message.content === 'string' ? message.content.trim() : '';
+    if (!content) return;
+    const ok = tts.speak(content);
+    if (ok) setTtsTarget({ kind: 'chat', id: message.id });
+  };
+
+  const maybeAutoReadAssistantReply = (message: Message) => {
+    if (!autoReadAssistantReplies) return;
+    if (!tts.isSupported) return;
+    if (activeTab !== 'chat') return;
+    if (message.role !== 'assistant') return;
+    if (tts.status !== 'idle') return; // Don't interrupt manual playback.
     const content = typeof message.content === 'string' ? message.content.trim() : '';
     if (!content) return;
     const ok = tts.speak(content);
@@ -722,7 +788,16 @@ function App() {
                 <span className="text-4xl">💡</span>
                 In short...
               </h2>
-              {renderTopSpeakerControls('summary')}
+              <div className="flex flex-col items-end gap-2 shrink-0">
+                <button
+                  onClick={requestPageSummary}
+                  disabled={isLoading}
+                  className="px-4 py-2 text-sm font-semibold bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors shadow-sm"
+                >
+                  🔄 Refresh
+                </button>
+                {renderTopSpeakerControls('summary')}
+              </div>
             </div>
             {isLoading && !summary ? (
               <div className="space-y-3">
@@ -831,19 +906,20 @@ function App() {
         /* Headings Tab */
         <>
           <div className="flex-1 overflow-y-auto p-6">
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-start justify-between mb-4 gap-3">
               <h2 className="text-3xl font-bold text-gray-800 flex items-center gap-2">
                 <span className="text-4xl">📑</span>
                 Table of Contents
               </h2>
-              <div className="flex items-center gap-2">
-                {renderTopSpeakerControls('headings')}
+              <div className="flex flex-col items-end gap-2 shrink-0">
                 <button
                   onClick={requestPageSummary}
-                  className="px-3 py-1 text-base bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                  disabled={isLoading}
+                  className="px-4 py-2 text-sm font-semibold bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors shadow-sm"
                 >
                   🔄 Refresh
                 </button>
+                {renderTopSpeakerControls('headings')}
               </div>
             </div>
             {headings.length === 0 ? (

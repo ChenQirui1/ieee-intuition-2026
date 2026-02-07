@@ -9,8 +9,22 @@ interface UserPreferences {
   hideAds: boolean;
   simplifyLanguage: boolean;
   showBreadcrumbs: boolean;
+  ttsRate: number;
+  autoReadAssistant: boolean;
   profileName: string;
 }
+
+const DEFAULT_USER_PREFERENCES: UserPreferences = {
+  fontSize: 'standard',
+  linkStyle: 'default',
+  contrastMode: 'standard',
+  hideAds: false,
+  simplifyLanguage: false,
+  showBreadcrumbs: false,
+  ttsRate: 1,
+  autoReadAssistant: false,
+  profileName: 'My Profile',
+};
 
 export default defineContentScript({
   matches: ['<all_urls>'],
@@ -210,6 +224,12 @@ function initMessageListener() {
       handleGetPageContent();
     } else if (message.type === 'SCROLL_TO_HEADING') {
       handleScrollToHeading(message.index);
+    } else if (message.type === 'APPLY_USER_PREFERENCES') {
+      if (message.preferences) {
+        applyAccessibilityStyles(message.preferences);
+      } else {
+        removeAccessibilityStyles();
+      }
     }
   });
 }
@@ -335,19 +355,29 @@ async function initAccessibilityFeatures() {
     if (preferences) {
       console.log('[IEEE Extension] Applying accessibility preferences:', preferences);
       applyAccessibilityStyles(preferences);
-
-      // Watch for preference changes
-      storage.watch<UserPreferences>('sync:userPreferences', (newPreferences) => {
-        if (newPreferences) {
-          console.log('[IEEE Extension] Preferences updated:', newPreferences);
-          applyAccessibilityStyles(newPreferences);
-        }
-      });
     } else {
       console.log('[IEEE Extension] No preferences found, using defaults');
+      removeAccessibilityStyles();
     }
+
+    // Watch for preference changes (even if preferences aren't set yet).
+    storage.watch<UserPreferences>('sync:userPreferences', (newPreferences) => {
+      if (newPreferences) {
+        console.log('[IEEE Extension] Preferences updated:', newPreferences);
+        applyAccessibilityStyles(newPreferences);
+      } else {
+        removeAccessibilityStyles();
+      }
+    });
   } catch (error) {
     console.error('[IEEE Extension] Failed to load preferences:', error);
+  }
+}
+
+function removeAccessibilityStyles() {
+  const existingStyle = document.getElementById('ieee-accessibility-styles');
+  if (existingStyle) {
+    existingStyle.remove();
   }
 }
 
@@ -355,6 +385,7 @@ async function initAccessibilityFeatures() {
  * Apply accessibility styles based on user preferences
  */
 function applyAccessibilityStyles(preferences: UserPreferences) {
+  const effectivePreferences: UserPreferences = { ...DEFAULT_USER_PREFERENCES, ...preferences };
   // Remove existing style element if it exists
   const existingStyle = document.getElementById('ieee-accessibility-styles');
   if (existingStyle) {
@@ -368,13 +399,13 @@ function applyAccessibilityStyles(preferences: UserPreferences) {
   let css = '';
 
   // Zoom rate adjustments
-  if (preferences.fontSize === 'large') {
+  if (effectivePreferences.fontSize === 'large') {
     css += `
       body {
         zoom: 1.25 !important;
       }
     `;
-  } else if (preferences.fontSize === 'extra-large') {
+  } else if (effectivePreferences.fontSize === 'extra-large') {
     css += `
       body {
         zoom: 1.5 !important;
@@ -383,13 +414,13 @@ function applyAccessibilityStyles(preferences: UserPreferences) {
   }
 
   // Link styling
-  if (preferences.linkStyle === 'underline') {
+  if (effectivePreferences.linkStyle === 'underline') {
     css += `
       a, a:link, a:visited {
         text-decoration: underline !important;
       }
     `;
-  } else if (preferences.linkStyle === 'highlight') {
+  } else if (effectivePreferences.linkStyle === 'highlight') {
     css += `
       a, a:link, a:visited {
         background-color: #FEF08A !important;
@@ -397,7 +428,7 @@ function applyAccessibilityStyles(preferences: UserPreferences) {
         border-radius: 2px !important;
       }
     `;
-  } else if (preferences.linkStyle === 'border') {
+  } else if (effectivePreferences.linkStyle === 'border') {
     css += `
       a, a:link, a:visited {
         border: 2px solid currentColor !important;
@@ -409,7 +440,7 @@ function applyAccessibilityStyles(preferences: UserPreferences) {
   }
 
   // High contrast mode (Yellow on Black)
-  if (preferences.contrastMode === 'high-contrast-yellow') {
+  if (effectivePreferences.contrastMode === 'high-contrast-yellow') {
     css += `
       body, body * {
         background-color: #000000 !important;
@@ -428,7 +459,7 @@ function applyAccessibilityStyles(preferences: UserPreferences) {
   }
 
   // Hide ads
-  if (preferences.hideAds) {
+  if (effectivePreferences.hideAds) {
     css += `
       /* Common ad selectors */
       [class*="ad-"], [id*="ad-"],
