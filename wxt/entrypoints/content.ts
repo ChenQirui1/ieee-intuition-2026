@@ -6,6 +6,7 @@ interface UserPreferences {
   fontSize: 'standard' | 'large' | 'extra-large';
   linkStyle: 'default' | 'underline' | 'highlight' | 'border';
   contrastMode: 'standard' | 'high-contrast-yellow';
+  magnifyingZoomLevel: 1.5 | 2 | 2.5 | 3;
   hideAds: boolean;
   simplifyLanguage: boolean;
   showBreadcrumbs: boolean;
@@ -29,6 +30,10 @@ function initInterpreter() {
     // Initialize click handler for sidepanel
     initClickHandler();
     console.log('[IEEE Extension] Click handler initialized');
+
+    // Initialize magnifying glass feature
+    initMagnifyingGlass();
+    console.log('[IEEE Extension] Magnifying glass initialized');
 
     // Listen for messages from sidepanel
     initMessageListener();
@@ -168,6 +173,254 @@ function initClickHandler() {
     element.style.backgroundColor = '';
     element.style.cursor = '';
   }
+}
+
+/**
+ * Initialize magnifying glass feature (viewport snapshot -> crop -> scale).
+ */
+function initMagnifyingGlass() {
+  let magnifyingMode = false;
+  let zoomLevel = 2.5;
+  const lensSize = 150;
+  const captureFps = 24;
+  const captureIntervalMs = 1000 / captureFps;
+  let captureInFlight = false;
+  let lastCaptureAt = 0;
+  let renderFrame: number | null = null;
+  let lastX = 0;
+  let lastY = 0;
+
+  let snapshotImage: HTMLImageElement | null = null;
+  let snapshotReady = false;
+  let snapshotWidth = 0;
+  let snapshotHeight = 0;
+
+  const magnifyingLens = document.createElement('div');
+  magnifyingLens.id = 'ieee-magnifying-lens';
+  magnifyingLens.setAttribute('data-ieee-extension', 'true');
+  magnifyingLens.style.cssText = `
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: ${lensSize}px;
+    height: ${lensSize}px;
+    border: 3px solid #3B82F6;
+    border-radius: 50%;
+    background-color: white;
+    box-shadow: 0 0 10px rgba(59, 130, 246, 0.5), inset 0 0 10px rgba(59, 130, 246, 0.2);
+    overflow: hidden;
+    pointer-events: none;
+    display: none;
+    z-index: 999999;
+    will-change: transform;
+  `;
+
+  const magnifierCanvas = document.createElement('canvas');
+  magnifierCanvas.setAttribute('data-ieee-extension', 'true');
+  magnifierCanvas.style.cssText = `
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  `;
+  const magnifierCtx = magnifierCanvas.getContext('2d');
+  magnifyingLens.appendChild(magnifierCanvas);
+
+  const attachLens = () => {
+    const mountTarget = document.body || document.documentElement;
+    if (!mountTarget) {
+      return false;
+    }
+    mountTarget.appendChild(magnifyingLens);
+    return true;
+  };
+  if (!attachLens()) {
+    document.addEventListener('DOMContentLoaded', () => {
+      attachLens();
+    }, { once: true });
+  }
+
+  const applyCursor = (enabled: boolean) => {
+    if (!document.body) return;
+    document.body.style.cursor = enabled
+      ? 'url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2732%22 height=%2732%22 viewBox=%220 0 32 32%22%3E%3Ccircle cx=%2716%22 cy=%2716%22 r=%2714%22 fill=%22none%22 stroke=%22%233B82F6%22 stroke-width=%222%22/%3E%3Cline x1=%2722%22 y1=%2722%22 x2=%2728%22 y2=%2728%22 stroke=%22%233B82F6%22 stroke-width=%222%22/%3E%3C/svg%3E") 16 16, auto'
+      : 'auto';
+  };
+
+  const loadMagnifyingPreference = async () => {
+    try {
+      const preferences = await storage.getItem<UserPreferences>('sync:userPreferences');
+      if (preferences?.magnifyingZoomLevel) {
+        zoomLevel = preferences.magnifyingZoomLevel;
+      }
+
+      storage.watch<UserPreferences>('sync:userPreferences', (newPreferences) => {
+        if (newPreferences?.magnifyingZoomLevel) {
+          zoomLevel = newPreferences.magnifyingZoomLevel;
+        }
+      });
+    } catch (error) {
+      console.error('[IEEE Extension] Failed to load magnifying preferences:', error);
+    }
+  };
+
+  loadMagnifyingPreference();
+
+  const notifyMagnifyingMode = (enabled: boolean) => {
+    browser.runtime.sendMessage({
+      type: 'MAGNIFYING_MODE_CHANGED',
+      enabled,
+    }).catch(() => {
+      // Sidepanel might not be open
+    });
+  };
+
+  const requestSnapshotCapture = async (force = false) => {
+    if (!magnifyingMode || captureInFlight) return;
+    const now = performance.now();
+    if (!force && now - lastCaptureAt < captureIntervalMs) {
+      return;
+    }
+    lastCaptureAt = now;
+    captureInFlight = true;
+    try {
+      const response = await browser.runtime.sendMessage({ type: 'CAPTURE_VISIBLE_TAB' });
+      if (response?.ok && response.dataUrl) {
+        const img = new Image();
+        img.onload = () => {
+          snapshotImage = img;
+          snapshotWidth = img.naturalWidth || img.width;
+          snapshotHeight = img.naturalHeight || img.height;
+          snapshotReady = true;
+          scheduleRender();
+        };
+        img.src = response.dataUrl;
+      }
+    } catch (error) {
+      console.warn('[IEEE Extension] Snapshot capture failed:', error);
+    } finally {
+      captureInFlight = false;
+    }
+  };
+
+  const scheduleRender = () => {
+    if (!magnifyingMode) return;
+    if (renderFrame) {
+      cancelAnimationFrame(renderFrame);
+    }
+    renderFrame = requestAnimationFrame(() => {
+      renderFrame = null;
+      renderMagnifier();
+    });
+  };
+
+  const renderMagnifier = () => {
+    if (!magnifyingMode || !magnifierCtx) return;
+    magnifyingLens.style.display = 'block';
+    magnifyingLens.style.transform = `translate(${lastX - lensSize / 2}px, ${lastY - lensSize / 2}px)`;
+
+    const dpr = window.devicePixelRatio || 1;
+    const targetWidth = Math.round(lensSize * dpr);
+    const targetHeight = Math.round(lensSize * dpr);
+    if (magnifierCanvas.width !== targetWidth || magnifierCanvas.height !== targetHeight) {
+      magnifierCanvas.width = targetWidth;
+      magnifierCanvas.height = targetHeight;
+    }
+
+    magnifierCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    magnifierCtx.imageSmoothingEnabled = true;
+    magnifierCtx.clearRect(0, 0, lensSize, lensSize);
+
+    if (!snapshotReady || !snapshotImage) {
+      magnifierCtx.fillStyle = '#FFFFFF';
+      magnifierCtx.fillRect(0, 0, lensSize, lensSize);
+      magnifierCtx.fillStyle = '#64748B';
+      magnifierCtx.font = '12px system-ui, sans-serif';
+      magnifierCtx.textAlign = 'center';
+      magnifierCtx.fillText('Loading...', lensSize / 2, lensSize / 2);
+      return;
+    }
+
+    const viewport = window.visualViewport;
+    const viewportWidth = viewport?.width ?? window.innerWidth;
+    const viewportHeight = viewport?.height ?? window.innerHeight;
+    const ratioX = snapshotWidth / viewportWidth;
+    const ratioY = snapshotHeight / viewportHeight;
+
+    const sourceW = (lensSize / zoomLevel) * ratioX;
+    const sourceH = (lensSize / zoomLevel) * ratioY;
+    let sourceX = lastX * ratioX - sourceW / 2;
+    let sourceY = lastY * ratioY - sourceH / 2;
+
+    sourceX = Math.max(0, Math.min(snapshotWidth - sourceW, sourceX));
+    sourceY = Math.max(0, Math.min(snapshotHeight - sourceH, sourceY));
+
+    magnifierCtx.drawImage(
+      snapshotImage,
+      sourceX,
+      sourceY,
+      sourceW,
+      sourceH,
+      0,
+      0,
+      lensSize,
+      lensSize
+    );
+  };
+
+  document.addEventListener('mousemove', (event) => {
+    lastX = event.clientX;
+    lastY = event.clientY;
+    if (magnifyingMode) {
+      scheduleRender();
+      requestSnapshotCapture();
+    }
+  });
+
+  document.addEventListener('mouseleave', () => {
+    if (!magnifyingMode) return;
+    magnifyingLens.style.display = 'none';
+  });
+
+  document.addEventListener('mouseenter', () => {
+    if (!magnifyingMode) return;
+    magnifyingLens.style.display = 'block';
+    scheduleRender();
+  });
+
+  window.addEventListener('scroll', () => {
+    if (!magnifyingMode) return;
+    requestSnapshotCapture(true);
+  }, { passive: true });
+
+  window.addEventListener('resize', () => {
+    if (!magnifyingMode) return;
+    requestSnapshotCapture(true);
+  });
+
+  browser.runtime.onMessage.addListener((message) => {
+    if (message.type !== 'TOGGLE_MAGNIFYING_MODE') {
+      return;
+    }
+
+    magnifyingMode = message.enabled;
+    if (magnifyingMode) {
+      if (!lastX && !lastY) {
+        lastX = Math.round(window.innerWidth / 2);
+        lastY = Math.round(window.innerHeight / 2);
+      }
+      snapshotReady = false;
+      magnifyingLens.style.display = 'block';
+      applyCursor(true);
+      requestSnapshotCapture(true);
+      scheduleRender();
+    } else {
+      magnifyingLens.style.display = 'none';
+      applyCursor(false);
+    }
+
+    notifyMagnifyingMode(magnifyingMode);
+  });
 }
 
 /**
