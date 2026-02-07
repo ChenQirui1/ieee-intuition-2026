@@ -2,12 +2,44 @@ import { useState, useEffect, useRef } from 'react';
 import { browser } from 'wxt/browser';
 import { storage } from '@wxt-dev/storage';
 import { simplifyPage, sendImageCaption, sendTextCompletion } from './api';
+import { useTts } from './useTts';
 
 interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
+}
+
+function coerceDate(value: unknown): Date {
+  if (value instanceof Date) return value;
+
+  const date = new Date(
+    typeof value === 'string' || typeof value === 'number' ? value : Date.now(),
+  );
+  return Number.isNaN(date.getTime()) ? new Date() : date;
+}
+
+function normalizeStoredMessages(raw: unknown): Message[] {
+  if (!Array.isArray(raw)) return [];
+
+  return raw
+    .filter((m) => m && typeof m === 'object')
+    .map((m: any, idx: number) => ({
+      id: typeof m.id === 'string' && m.id ? m.id : `${Date.now()}_${idx}`,
+      role: m.role === 'user' ? 'user' : 'assistant',
+      content: typeof m.content === 'string' ? m.content : String(m.content ?? ''),
+      timestamp: coerceDate(m.timestamp),
+    }));
+}
+
+function formatTimestamp(value: unknown): string {
+  const date = coerceDate(value);
+  try {
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  } catch {
+    return '';
+  }
 }
 
 interface PageSummary {
@@ -46,6 +78,26 @@ function App() {
   const [error, setError] = useState<string>('');
   const [backendStatus, setBackendStatus] = useState<'unknown' | 'connected' | 'disconnected'>('unknown');
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const tts = useTts();
+
+  const [ttsTarget, setTtsTarget] = useState<
+    | { kind: 'summary' }
+    | { kind: 'headings' }
+    | { kind: 'chat'; id: string }
+    | null
+  >(null);
+
+  useEffect(() => {
+    if (tts.status === 'idle') {
+      setTtsTarget(null);
+    }
+  }, [tts.status]);
+
+  // Keep audio output scoped to the current view.
+  useEffect(() => {
+    tts.stop();
+    setTtsTarget(null);
+  }, [activeTab]);
 
   useEffect(() => {
     // Initialize session ID
@@ -74,16 +126,16 @@ function App() {
           if (cachedPageId) setPageId(cachedPageId);
           if (cachedSimplId) setSimplificationId(cachedSimplId);
 
-          // Load chat messages for this URL
-          const savedMessages = await storage.getItem<Message[]>(`local:chatMessages:${tabs[0].url}`);
-          if (savedMessages && Array.isArray(savedMessages)) {
-            console.log('[Sidepanel] Loaded saved messages:', savedMessages.length);
-            setMessages(savedMessages);
-          }
-        }
-      } catch (error) {
-        console.error('[Sidepanel] Failed to get current URL:', error);
-      }
+           // Load chat messages for this URL
+           const savedMessages = await storage.getItem<Message[]>(`local:chatMessages:${tabs[0].url}`);
+           if (savedMessages && Array.isArray(savedMessages)) {
+             console.log('[Sidepanel] Loaded saved messages:', savedMessages.length);
+            setMessages(normalizeStoredMessages(savedMessages));
+           }
+         }
+       } catch (error) {
+         console.error('[Sidepanel] Failed to get current URL:', error);
+       }
     };
     getCurrentUrl();
 
@@ -508,6 +560,103 @@ function App() {
     }
   };
 
+  const startSummarySpeech = () => {
+    if (!tts.isSupported) return;
+    const bullets = summary?.bullets ?? [];
+    if (!bullets.length) return;
+    const ok = tts.speak(bullets);
+    if (ok) setTtsTarget({ kind: 'summary' });
+  };
+
+  const startHeadingsSpeech = () => {
+    if (!tts.isSupported) return;
+    if (!headings.length) return;
+    const ok = tts.speak(headings.map((h) => h.text));
+    if (ok) setTtsTarget({ kind: 'headings' });
+  };
+
+  const startChatMessageSpeech = (message: Message) => {
+    if (!tts.isSupported) return;
+    const content = typeof message.content === 'string' ? message.content.trim() : '';
+    if (!content) return;
+    const ok = tts.speak(content);
+    if (ok) setTtsTarget({ kind: 'chat', id: message.id });
+  };
+
+  const renderTopSpeakerControls = (kind: 'summary' | 'headings') => {
+    const isActive = ttsTarget?.kind === kind && tts.status !== 'idle';
+    const canStart =
+      kind === 'summary'
+        ? !!summary?.bullets?.length
+        : headings.length > 0;
+
+    const label =
+      kind === 'summary'
+        ? 'Listen to summary'
+        : 'Listen to headings';
+
+    const onStart =
+      kind === 'summary'
+        ? startSummarySpeech
+        : startHeadingsSpeech;
+
+    if (!tts.isSupported) {
+      return (
+        <button
+          type="button"
+          disabled
+          className="p-2 rounded-lg border border-gray-200 bg-white text-gray-400 shadow-sm cursor-not-allowed"
+          title="Text-to-speech is not supported"
+          aria-label="Text-to-speech is not supported"
+        >
+          <SpeakerWaveIcon className="w-5 h-5" />
+        </button>
+      );
+    }
+
+    if (!isActive) {
+      return (
+        <button
+          type="button"
+          onClick={onStart}
+          disabled={!canStart}
+          className="p-2 rounded-lg border border-gray-200 bg-white text-gray-700 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          title={label}
+          aria-label={label}
+        >
+          <SpeakerWaveIcon className="w-5 h-5" />
+        </button>
+      );
+    }
+
+    return (
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => (tts.status === 'speaking' ? tts.pause() : tts.resume())}
+          className="p-2 rounded-lg border border-gray-200 bg-white text-gray-800 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
+          title={tts.status === 'speaking' ? 'Pause' : 'Play'}
+          aria-label={tts.status === 'speaking' ? 'Pause' : 'Play'}
+        >
+          {tts.status === 'speaking' ? (
+            <PauseIcon className="w-5 h-5" />
+          ) : (
+            <PlayIcon className="w-5 h-5" />
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={tts.stop}
+          className="p-2 rounded-lg border border-gray-200 bg-white text-gray-800 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
+          title="Stop"
+          aria-label="Stop"
+        >
+          <StopIcon className="w-5 h-5" />
+        </button>
+      </div>
+    );
+  };
+
   return (
     <div className="flex flex-col h-screen bg-gray-50">
       {/* Error Banner */}
@@ -568,10 +717,13 @@ function App() {
         /* Summary Tab */
         <>
           <div className="flex-1 overflow-y-auto p-6">
-            <h2 className="text-3xl font-bold text-gray-800 mb-4 flex items-center gap-2">
-              <span className="text-4xl">💡</span>
-              In short...
-            </h2>
+            <div className="flex items-start justify-between gap-3 mb-4">
+              <h2 className="text-3xl font-bold text-gray-800 flex items-center gap-2">
+                <span className="text-4xl">💡</span>
+                In short...
+              </h2>
+              {renderTopSpeakerControls('summary')}
+            </div>
             {isLoading && !summary ? (
               <div className="space-y-3">
                 <div className="h-4 bg-gray-300 rounded animate-pulse"></div>
@@ -684,12 +836,15 @@ function App() {
                 <span className="text-4xl">📑</span>
                 Table of Contents
               </h2>
-              <button
-                onClick={requestPageSummary}
-                className="px-3 py-1 text-base bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-              >
-                🔄 Refresh
-              </button>
+              <div className="flex items-center gap-2">
+                {renderTopSpeakerControls('headings')}
+                <button
+                  onClick={requestPageSummary}
+                  className="px-3 py-1 text-base bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                >
+                  🔄 Refresh
+                </button>
+              </div>
             </div>
             {headings.length === 0 ? (
               <div className="text-gray-500 text-lg">
@@ -792,32 +947,83 @@ function App() {
               </div>
             ) : (
               <>
-                {messages.map((message) => (
-                  <div
-                    key={message.id}
-                    className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                  >
+                {messages.map((message) => {
+                 const isAssistant = message.role === 'assistant';
+                  const isActive =
+                    isAssistant
+                    && ttsTarget?.kind === 'chat'
+                    && ttsTarget.id === message.id
+                    && tts.status !== 'idle';
+                  const safeContent = typeof message.content === 'string' ? message.content : String((message as any)?.content ?? '');
+                  const canSpeak = tts.isSupported && !!safeContent.trim();
+                  const timeLabel = formatTimestamp((message as any)?.timestamp ?? message.timestamp);
+
+                  return (
                     <div
-                      className={`max-w-[85%] rounded-lg px-4 py-3 ${
-                        message.role === 'user'
-                          ? 'bg-blue-600 text-white'
-                          : 'bg-white text-gray-900 shadow-md border border-gray-200'
-                      }`}
+                      key={message.id}
+                      className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
                     >
-                      <p className="text-base leading-relaxed">{message.content}</p>
-                      <p
-                        className={`text-xs mt-1 ${
-                          message.role === 'user' ? 'text-blue-100' : 'text-gray-500'
-                        }`}
+                      <div
+                        className={`max-w-[85%] rounded-lg px-4 py-3 relative ${
+                          message.role === 'user'
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-white text-gray-900 shadow-md border border-gray-200'
+                        } ${isAssistant ? 'pr-12' : ''}`}
                       >
-                        {message.timestamp.toLocaleTimeString([], {
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })}
-                      </p>
+                        <p className="text-base leading-relaxed break-words">{message.content}</p>
+                        <p
+                          className={`text-xs mt-1 ${
+                            message.role === 'user' ? 'text-blue-100' : 'text-gray-500'
+                          }`}
+                        >
+                          {timeLabel}
+                        </p>
+
+                        {isAssistant && (
+                          <div className="absolute top-2 right-2 flex flex-col items-center gap-2">
+                            {!isActive ? (
+                              <button
+                                type="button"
+                                onClick={() => startChatMessageSpeech(message)}
+                                disabled={!canSpeak}
+                                className="p-2 rounded-lg border border-gray-200 bg-white text-gray-700 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                title="Listen"
+                                aria-label="Listen"
+                              >
+                                <SpeakerWaveIcon className="w-5 h-5" />
+                              </button>
+                            ) : (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => (tts.status === 'speaking' ? tts.pause() : tts.resume())}
+                                  className="p-2 rounded-lg border border-gray-200 bg-white text-gray-800 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
+                                  title={tts.status === 'speaking' ? 'Pause' : 'Play'}
+                                  aria-label={tts.status === 'speaking' ? 'Pause' : 'Play'}
+                                >
+                                  {tts.status === 'speaking' ? (
+                                    <PauseIcon className="w-5 h-5" />
+                                  ) : (
+                                    <PlayIcon className="w-5 h-5" />
+                                  )}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={tts.stop}
+                                  className="p-2 rounded-lg border border-gray-200 bg-white text-gray-800 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
+                                  title="Stop"
+                                  aria-label="Stop"
+                                >
+                                  <StopIcon className="w-5 h-5" />
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
                 {isLoading && (
                   <div className="flex justify-start">
                     <div className="bg-white text-gray-900 shadow-md border border-gray-200 rounded-lg px-4 py-3">
@@ -908,3 +1114,61 @@ function App() {
 }
 
 export default App;
+
+function SpeakerWaveIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M11 5L6 9H2v6h4l5 4V5z" />
+      <path d="M15.5 8.5a4 4 0 010 7" />
+      <path d="M18.5 5.5a8 8 0 010 13" />
+    </svg>
+  );
+}
+
+function PlayIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M8 5v14l12-7-12-7z" />
+    </svg>
+  );
+}
+
+function PauseIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M6 5h4v14H6zM14 5h4v14h-4z" />
+    </svg>
+  );
+}
+
+function StopIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M6 6h12v12H6z" />
+    </svg>
+  );
+}
