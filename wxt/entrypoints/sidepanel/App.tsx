@@ -8,7 +8,7 @@ import {
   type ChecklistGuide,
   type StepByStepGuide,
 } from './normalizeReading';
-import { simplifyPage, sendImageCaption, sendTextCompletion } from './api';
+import { simplifyPage, sendImageCaption, sendTextCompletion, type LanguageCode } from './api';
 import { useTts } from './useTts';
 
 interface Message {
@@ -96,6 +96,15 @@ function formatTimestamp(value: unknown): string {
   } catch {
     return '';
   }
+}
+
+function splitWhitespace(value: string): { leading: string; core: string; trailing: string } {
+  const match = value.match(/^(\s*)(.*?)(\s*)$/s);
+  return {
+    leading: match?.[1] ?? '',
+    core: match?.[2] ?? value,
+    trailing: match?.[3] ?? '',
+  };
 }
 
 interface PageSummary {
@@ -294,6 +303,8 @@ const LANGUAGE_BADGE: Record<LanguageCode, string> = {
   ta: 'தமிழ்',
 };
 
+const SUPPORTED_LANGUAGES: LanguageCode[] = ['en', 'zh', 'ms', 'ta'];
+
 const SUPPORTED_TTS_RATES = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
 
 function coerceTtsRate(value: unknown): number {
@@ -336,13 +347,42 @@ const MagnifierIcon = ({ className }: { className?: string }) => (
   </svg>
 );
 
+const GearIcon = ({ className }: { className?: string }) => (
+  <svg
+    className={className}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <circle cx="12" cy="12" r="3.5" />
+    <circle cx="12" cy="12" r="7.5" opacity="0.35" />
+    <line x1="12" y1="2.5" x2="12" y2="4.9" />
+    <line x1="12" y1="19.1" x2="12" y2="21.5" />
+    <line x1="2.5" y1="12" x2="4.9" y2="12" />
+    <line x1="19.1" y1="12" x2="21.5" y2="12" />
+    <line x1="4.6" y1="4.6" x2="6.3" y2="6.3" />
+    <line x1="17.7" y1="17.7" x2="19.4" y2="19.4" />
+    <line x1="19.4" y1="4.6" x2="17.7" y2="6.3" />
+    <line x1="6.3" y1="17.7" x2="4.6" y2="19.4" />
+  </svg>
+);
+
 function App() {
+  const [messagesRaw, setMessagesRaw] = useState<Message[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [easyReadRaw, setEasyReadRaw] = useState<EasyReadOutput | null>(null);
   const [easyRead, setEasyRead] = useState<EasyReadOutput | null>(null);
+  const [checklistGuideRaw, setChecklistGuideRaw] = useState<ChecklistGuide | null>(null);
   const [checklistGuide, setChecklistGuide] = useState<ChecklistGuide | null>(null);
+  const [stepByStepGuideRaw, setStepByStepGuideRaw] = useState<StepByStepGuide | null>(null);
   const [stepByStepGuide, setStepByStepGuide] = useState<StepByStepGuide | null>(null);
   const [hasChecklist, setHasChecklist] = useState<boolean | null>(null);
   const [hasSteps, setHasSteps] = useState<boolean | null>(null);
+  const [headingsRaw, setHeadingsRaw] = useState<Heading[]>([]);
   const [headings, setHeadings] = useState<Heading[]>([]);
   const [isSimplifying, setIsSimplifying] = useState(false);
   const [simplifyingMode, setSimplifyingMode] = useState<ReadingMode | null>(null);
@@ -395,6 +435,43 @@ function App() {
     generatePageSummary: async () => {},
     translateTextsIfNeeded: async (texts) => texts,
   });
+  const translationCacheRef = useRef<Record<LanguageCode, Map<string, string>>>({
+    en: new Map(),
+    zh: new Map(),
+    ms: new Map(),
+    ta: new Map(),
+  });
+  const localizedEasyReadRef = useRef<Record<LanguageCode, EasyReadOutput | null>>({
+    en: null,
+    zh: null,
+    ms: null,
+    ta: null,
+  });
+  const localizedChecklistRef = useRef<Record<LanguageCode, ChecklistGuide | null>>({
+    en: null,
+    zh: null,
+    ms: null,
+    ta: null,
+  });
+  const localizedStepByStepRef = useRef<Record<LanguageCode, StepByStepGuide | null>>({
+    en: null,
+    zh: null,
+    ms: null,
+    ta: null,
+  });
+  const localizedHeadingsRef = useRef<Record<LanguageCode, Heading[] | null>>({
+    en: null,
+    zh: null,
+    ms: null,
+    ta: null,
+  });
+  const localizedMessagesRef = useRef<Record<LanguageCode, Message[] | null>>({
+    en: null,
+    zh: null,
+    ms: null,
+    ta: null,
+  });
+  const activeLocalizationJobRef = useRef(0);
 
   useEffect(() => {
     if (tts.status === 'idle') {
@@ -439,51 +516,16 @@ function App() {
            const savedMessages = await storage.getItem<Message[]>(`local:chatMessages:${tabs[0].url}`);
            if (savedMessages && Array.isArray(savedMessages)) {
              console.log('[Sidepanel] Loaded saved messages:', savedMessages.length);
-            setMessages(normalizeStoredMessages(savedMessages));
+             const normalized = normalizeStoredMessages(savedMessages);
+             setMessagesRaw(normalized);
+             setMessages(normalized);
            }
-         }
-       } catch (error) {
-         console.error('[Sidepanel] Failed to get current URL:', error);
-       }
+          }
+        } catch (error) {
+          console.error('[Sidepanel] Failed to get current URL:', error);
+        }
     };
     getCurrentUrl();
-
-    // Listen for messages from content script
-    const handleMessage = (message: any, sender: any, sendResponse: any) => {
-      console.log('[Sidepanel] Received message:', message);
-      if (message.type === 'CAPTURE_VISIBLE_TAB') {
-        const windowId = sender?.tab?.windowId ?? browser.windows.WINDOW_ID_CURRENT;
-        browser.tabs.captureVisibleTab(windowId, { format: 'png' })
-          .then((dataUrl) => sendResponse({ ok: true, dataUrl }))
-          .catch((error) => {
-            console.error('[Sidepanel] captureVisibleTab failed:', error);
-            sendResponse({ ok: false });
-          });
-        return true;
-      }
-      if (message.type === 'ELEMENT_CLICKED') {
-        // Switch to chat tab if openChat flag is set
-        if (message.openChat) {
-          setActiveTab('chat');
-        }
-        handleElementClick(message.data);
-      } else if (message.type === 'MAGNIFYING_MODE_CHANGED') {
-        setMagnifyingMode(message.enabled);
-      } else if (message.type === 'PAGE_LOADED') {
-        console.log('[Sidepanel] Page loaded data:', message.data);
-        console.log('[Sidepanel] Headings received:', message.data.headings);
-        setPageTitle(message.data?.title || '');
-        setPageParagraphs(Array.isArray(message.data?.paragraphs) ? message.data.paragraphs : []);
-        setPageInteractions(Array.isArray(message.data?.interactions) ? message.data.interactions : []);
-        generatePageSummary(message.data);
-        setHeadings(message.data.headings || []);
-      }
-    };
-
-    browser.runtime.onMessage.addListener(handleMessage);
-
-    // Request initial page summary
-    requestPageSummary();
 
     // Load user preferences for zoom
     loadPreferences();
@@ -498,15 +540,27 @@ function App() {
     setActionAssistDismissed(false);
     setChecklistDone({});
     setStepsDone({});
+    setMessagesRaw([]);
+    setMessages([]);
+    setEasyReadRaw(null);
     setEasyRead(null);
+    setChecklistGuideRaw(null);
     setChecklistGuide(null);
+    setStepByStepGuideRaw(null);
     setStepByStepGuide(null);
     setHasChecklist(null);
     setHasSteps(null);
+    setHeadingsRaw([]);
+    setHeadings([]);
     setIsSimplifying(false);
     setSimplifyingMode(null);
     setPageParagraphs([]);
     setPageInteractions([]);
+    localizedEasyReadRef.current = { en: null, zh: null, ms: null, ta: null };
+    localizedChecklistRef.current = { en: null, zh: null, ms: null, ta: null };
+    localizedStepByStepRef.current = { en: null, zh: null, ms: null, ta: null };
+    localizedHeadingsRef.current = { en: null, zh: null, ms: null, ta: null };
+    localizedMessagesRef.current = { en: null, zh: null, ms: null, ta: null };
   }, [currentUrl]);
 
   const loadPreferences = async () => {
@@ -622,10 +676,10 @@ function App() {
   }, [messages]);
 
   useEffect(() => {
-    // Refresh summary/headings when the preferred language or URL changes.
+    // Refresh summary/headings when the URL changes (or first loads).
     if (!preferencesLoaded || !currentUrl) return;
     requestPageSummary();
-  }, [language, currentUrl, preferencesLoaded]);
+  }, [currentUrl, preferencesLoaded]);
 
   useEffect(() => {
     // Default to the preferred language, but allow switching the page back to its original language.
@@ -644,33 +698,489 @@ function App() {
     }
   };
 
-  const translateTextsIfNeeded = async (texts: string[]): Promise<string[]> => {
-    if (!texts.length || language === 'en') return texts;
+  const translateTextsToLanguage = async (
+    texts: string[],
+    targetLanguage: LanguageCode,
+  ): Promise<string[]> => {
+    if (!texts.length || targetLanguage === 'en') return texts;
+
+    const cache = translationCacheRef.current[targetLanguage];
+    const output = new Array<string>(texts.length).fill('');
+    const missing = new Map<string, number[]>();
+
+    for (let i = 0; i < texts.length; i += 1) {
+      const original = typeof texts[i] === 'string' ? texts[i] : String(texts[i] ?? '');
+      const { leading, core, trailing } = splitWhitespace(original);
+      const key = core.trim();
+      if (!key) {
+        output[i] = original;
+        continue;
+      }
+
+      const cached = cache.get(key);
+      if (typeof cached === 'string' && cached.trim()) {
+        output[i] = `${leading}${cached}${trailing}`;
+        continue;
+      }
+
+      const indices = missing.get(key) ?? [];
+      indices.push(i);
+      missing.set(key, indices);
+    }
+
+    const missingKeys = Array.from(missing.keys());
+    if (!missingKeys.length) {
+      return output.map((v, idx) => v || texts[idx] || '');
+    }
 
     try {
       const response = await browser.runtime.sendMessage({
         type: 'TRANSLATE_TEXTS',
-        targetLanguage: language,
-        texts,
+        targetLanguage,
+        texts: missingKeys,
       });
 
       if (response?.ok && Array.isArray(response.translations)) {
-        return texts.map((original, idx) => {
-          const candidate = response.translations[idx];
-          return typeof candidate === 'string' && candidate.trim() ? candidate : original;
-        });
+        for (let k = 0; k < missingKeys.length; k += 1) {
+          const key = missingKeys[k];
+          const candidate = response.translations[k];
+          const translated =
+            typeof candidate === 'string' && candidate.trim() ? candidate : key;
+          cache.set(key, translated);
+
+          const indices = missing.get(key) ?? [];
+          for (const idx of indices) {
+            const original = texts[idx] ?? '';
+            const { leading, trailing } = splitWhitespace(original);
+            output[idx] = `${leading}${translated}${trailing}`;
+          }
+        }
       }
     } catch (error) {
       console.warn('[Sidepanel] Failed to translate texts:', error);
     }
 
-    return texts;
+    return output.map((v, idx) => v || texts[idx] || '');
   };
 
-  const generatePageSummary = async (pageData: any) => {
-    console.log('[Sidepanel] generatePageSummary called with pageData:', pageData);
-    setIsLoading(true);
-    setError('');
+  const translateTextsIfNeeded = async (texts: string[]): Promise<string[]> =>
+    translateTextsToLanguage(texts, language);
+
+  const localizeEasyReadOutput = async (
+    raw: EasyReadOutput,
+    targetLanguage: LanguageCode,
+  ): Promise<EasyReadOutput> => {
+    if (targetLanguage === 'en') return raw;
+
+    const payload: string[] = [];
+    payload.push(raw.about);
+    payload.push(...(raw.key_points || []));
+    payload.push(...(raw.glossary || []).flatMap((g) => [g.term, g.simple]));
+
+    if (raw.sections) {
+      for (const section of raw.sections) {
+        payload.push(section.heading);
+        payload.push(...(section.bullets || []));
+      }
+    }
+
+    if (raw.important_links) {
+      for (const link of raw.important_links) {
+        payload.push(link.label);
+      }
+    }
+
+    if (raw.warnings) {
+      payload.push(...raw.warnings);
+    }
+
+    const translated = await translateTextsToLanguage(payload, targetLanguage);
+    let cursor = 0;
+
+    const about = translated[cursor++] ?? raw.about;
+    const key_points = (raw.key_points || []).map((item) => translated[cursor++] ?? item);
+    const glossary = (raw.glossary || []).map((g) => {
+      const term = translated[cursor++] ?? g.term;
+      const simple = translated[cursor++] ?? g.simple;
+      return { term, simple };
+    });
+
+    const sections = raw.sections
+      ? raw.sections.map((section) => {
+          const heading = translated[cursor++] ?? section.heading;
+          const bullets = (section.bullets || []).map((b) => translated[cursor++] ?? b);
+          return { heading, bullets };
+        })
+      : undefined;
+
+    const important_links = raw.important_links
+      ? raw.important_links.map((link) => ({
+          ...link,
+          label: translated[cursor++] ?? link.label,
+        }))
+      : undefined;
+
+    const warnings = raw.warnings ? raw.warnings.map((w) => translated[cursor++] ?? w) : undefined;
+
+    return {
+      ...raw,
+      about,
+      key_points,
+      glossary,
+      sections,
+      important_links,
+      warnings,
+    };
+  };
+
+  const localizeChecklistGuide = async (
+    raw: ChecklistGuide,
+    targetLanguage: LanguageCode,
+  ): Promise<ChecklistGuide> => {
+    if (targetLanguage === 'en') return raw;
+
+    const payload: string[] = [];
+    payload.push(raw.goal);
+
+    const pushItemsWithDetails = (items: ChecklistGuide['requirements']) => {
+      for (const item of items) {
+        payload.push(item.item);
+        payload.push(item.details ?? '');
+      }
+    };
+    pushItemsWithDetails(raw.requirements || []);
+    pushItemsWithDetails(raw.documents || []);
+
+    for (const fee of raw.fees || []) payload.push(fee.item);
+    for (const deadline of raw.deadlines || []) payload.push(deadline.item);
+    for (const action of raw.actions || []) payload.push(action.item);
+    payload.push(...(raw.common_mistakes || []));
+
+    const translated = await translateTextsToLanguage(payload, targetLanguage);
+    let cursor = 0;
+
+    const goal = translated[cursor++] ?? raw.goal;
+    const mapItemsWithDetails = (items: ChecklistGuide['requirements']) =>
+      items.map((item) => {
+        const nextItem = translated[cursor++] ?? item.item;
+        const nextDetails = translated[cursor++] ?? (item.details ?? '');
+        return { ...item, item: nextItem, details: item.details ? nextDetails : undefined };
+      });
+
+    const requirements = mapItemsWithDetails(raw.requirements || []);
+    const documents = mapItemsWithDetails(raw.documents || []);
+    const fees = (raw.fees || []).map((fee) => ({ ...fee, item: translated[cursor++] ?? fee.item }));
+    const deadlines = (raw.deadlines || []).map((d) => ({ ...d, item: translated[cursor++] ?? d.item }));
+    const actions = (raw.actions || []).map((a) => ({ ...a, item: translated[cursor++] ?? a.item }));
+    const common_mistakes = (raw.common_mistakes || []).map((m) => translated[cursor++] ?? m);
+
+    return {
+      ...raw,
+      goal,
+      requirements,
+      documents,
+      fees,
+      deadlines,
+      actions,
+      common_mistakes,
+    };
+  };
+
+  const localizeStepByStepGuide = async (
+    raw: StepByStepGuide,
+    targetLanguage: LanguageCode,
+  ): Promise<StepByStepGuide> => {
+    if (targetLanguage === 'en') return raw;
+
+    const payload: string[] = [];
+    payload.push(raw.goal);
+    for (const step of raw.steps || []) {
+      payload.push(step.title);
+      payload.push(step.what_to_do);
+      payload.push(step.where_to_click);
+      payload.push(...(step.tips || []));
+    }
+    payload.push(...(raw.finish_check || []));
+
+    const translated = await translateTextsToLanguage(payload, targetLanguage);
+    let cursor = 0;
+
+    const goal = translated[cursor++] ?? raw.goal;
+    const steps = (raw.steps || []).map((step) => {
+      const title = translated[cursor++] ?? step.title;
+      const what_to_do = translated[cursor++] ?? step.what_to_do;
+      const where_to_click = translated[cursor++] ?? step.where_to_click;
+      const tips = (step.tips || []).map((t) => translated[cursor++] ?? t);
+      return { ...step, title, what_to_do, where_to_click, tips };
+    });
+    const finish_check = (raw.finish_check || []).map((f) => translated[cursor++] ?? f);
+
+    return { ...raw, goal, steps, finish_check };
+  };
+
+  const localizeHeadings = async (raw: Heading[], targetLanguage: LanguageCode): Promise<Heading[]> => {
+    if (targetLanguage === 'en' || raw.length === 0) return raw;
+    const translated = await translateTextsToLanguage(
+      raw.map((h) => h.text),
+      targetLanguage,
+    );
+    return raw.map((h, idx) => ({ ...h, text: translated[idx] || h.text }));
+  };
+
+  const localizeMessages = async (raw: Message[], targetLanguage: LanguageCode): Promise<Message[]> => {
+    if (targetLanguage === 'en' || raw.length === 0) return raw;
+    const translated = await translateTextsToLanguage(
+      raw.map((m) => m.content),
+      targetLanguage,
+    );
+    return raw.map((m, idx) => ({ ...m, content: translated[idx] || m.content }));
+  };
+
+  const isMessageListPrefix = (prefix: Message[], full: Message[]) => {
+    if (prefix.length > full.length) return false;
+    for (let i = 0; i < prefix.length; i += 1) {
+      if (prefix[i]?.id !== full[i]?.id) return false;
+    }
+    return true;
+  };
+
+  const ensureLocalizedEasyRead = async (targetLanguage: LanguageCode): Promise<EasyReadOutput | null> => {
+    if (!easyReadRaw) return null;
+    localizedEasyReadRef.current.en = easyReadRaw;
+    if (targetLanguage === 'en') return easyReadRaw;
+    const cached = localizedEasyReadRef.current[targetLanguage];
+    if (cached) return cached;
+    const localized = await localizeEasyReadOutput(easyReadRaw, targetLanguage);
+    localizedEasyReadRef.current[targetLanguage] = localized;
+    return localized;
+  };
+
+  const ensureLocalizedChecklist = async (targetLanguage: LanguageCode): Promise<ChecklistGuide | null> => {
+    if (!checklistGuideRaw) return null;
+    localizedChecklistRef.current.en = checklistGuideRaw;
+    if (targetLanguage === 'en') return checklistGuideRaw;
+    const cached = localizedChecklistRef.current[targetLanguage];
+    if (cached) return cached;
+    const localized = await localizeChecklistGuide(checklistGuideRaw, targetLanguage);
+    localizedChecklistRef.current[targetLanguage] = localized;
+    return localized;
+  };
+
+  const ensureLocalizedStepByStep = async (targetLanguage: LanguageCode): Promise<StepByStepGuide | null> => {
+    if (!stepByStepGuideRaw) return null;
+    localizedStepByStepRef.current.en = stepByStepGuideRaw;
+    if (targetLanguage === 'en') return stepByStepGuideRaw;
+    const cached = localizedStepByStepRef.current[targetLanguage];
+    if (cached) return cached;
+    const localized = await localizeStepByStepGuide(stepByStepGuideRaw, targetLanguage);
+    localizedStepByStepRef.current[targetLanguage] = localized;
+    return localized;
+  };
+
+  const ensureLocalizedHeadings = async (targetLanguage: LanguageCode): Promise<Heading[]> => {
+    localizedHeadingsRef.current.en = headingsRaw;
+    if (targetLanguage === 'en') return headingsRaw;
+    const cached = localizedHeadingsRef.current[targetLanguage];
+    if (cached) return cached;
+    const localized = await localizeHeadings(headingsRaw, targetLanguage);
+    localizedHeadingsRef.current[targetLanguage] = localized;
+    return localized;
+  };
+
+  const ensureLocalizedMessages = async (targetLanguage: LanguageCode): Promise<Message[]> => {
+    localizedMessagesRef.current.en = messagesRaw;
+    if (targetLanguage === 'en') return messagesRaw;
+    const cached = localizedMessagesRef.current[targetLanguage];
+    const isFresh =
+      Array.isArray(cached)
+      && cached.length === messagesRaw.length
+      && isMessageListPrefix(cached, messagesRaw);
+    if (isFresh) return cached;
+    const localized = await localizeMessages(messagesRaw, targetLanguage);
+    localizedMessagesRef.current[targetLanguage] = localized;
+    return localized;
+  };
+
+  const syncLocalizedContent = async (targetLanguage: LanguageCode) => {
+    activeLocalizationJobRef.current += 1;
+    const jobId = activeLocalizationJobRef.current;
+
+    if (easyReadRaw) {
+      const cached = targetLanguage === 'en' ? easyReadRaw : localizedEasyReadRef.current[targetLanguage];
+      setEasyRead(cached ?? easyReadRaw);
+    } else {
+      setEasyRead(null);
+    }
+
+    if (checklistGuideRaw) {
+      const cached =
+        targetLanguage === 'en' ? checklistGuideRaw : localizedChecklistRef.current[targetLanguage];
+      setChecklistGuide(cached ?? checklistGuideRaw);
+    } else {
+      setChecklistGuide(null);
+    }
+
+    if (stepByStepGuideRaw) {
+      const cached =
+        targetLanguage === 'en'
+          ? stepByStepGuideRaw
+          : localizedStepByStepRef.current[targetLanguage];
+      setStepByStepGuide(cached ?? stepByStepGuideRaw);
+    } else {
+      setStepByStepGuide(null);
+    }
+
+    if (headingsRaw.length) {
+      const cached = targetLanguage === 'en' ? headingsRaw : localizedHeadingsRef.current[targetLanguage];
+      setHeadings(cached ?? headingsRaw);
+    } else {
+      setHeadings([]);
+    }
+
+    if (messagesRaw.length) {
+      if (targetLanguage === 'en') {
+        setMessages(messagesRaw);
+      } else {
+        const cached = localizedMessagesRef.current[targetLanguage];
+        if (Array.isArray(cached) && isMessageListPrefix(cached, messagesRaw)) {
+          // Merge cached translations with any newly appended messages so replies never disappear.
+          const merged = cached.length === messagesRaw.length
+            ? cached
+            : [...cached, ...messagesRaw.slice(cached.length)];
+          setMessages(merged);
+        } else {
+          setMessages(messagesRaw);
+        }
+      }
+    } else {
+      setMessages([]);
+    }
+
+    if (targetLanguage === 'en') return;
+
+    const tasks: Promise<void>[] = [];
+    if (easyReadRaw && !localizedEasyReadRef.current[targetLanguage]) {
+      tasks.push(
+        ensureLocalizedEasyRead(targetLanguage).then((localized) => {
+          if (jobId !== activeLocalizationJobRef.current || !localized) return;
+          setEasyRead(localized);
+        }),
+      );
+    }
+    if (checklistGuideRaw && !localizedChecklistRef.current[targetLanguage]) {
+      tasks.push(
+        ensureLocalizedChecklist(targetLanguage).then((localized) => {
+          if (jobId !== activeLocalizationJobRef.current || !localized) return;
+          setChecklistGuide(localized);
+        }),
+      );
+    }
+    if (stepByStepGuideRaw && !localizedStepByStepRef.current[targetLanguage]) {
+      tasks.push(
+        ensureLocalizedStepByStep(targetLanguage).then((localized) => {
+          if (jobId !== activeLocalizationJobRef.current || !localized) return;
+          setStepByStepGuide(localized);
+        }),
+      );
+    }
+    if (headingsRaw.length && !localizedHeadingsRef.current[targetLanguage]) {
+      tasks.push(
+        ensureLocalizedHeadings(targetLanguage).then((localized) => {
+          if (jobId !== activeLocalizationJobRef.current) return;
+          setHeadings(localized);
+        }),
+      );
+    }
+    const messageCacheFresh =
+      Array.isArray(localizedMessagesRef.current[targetLanguage])
+      && (localizedMessagesRef.current[targetLanguage] as Message[]).length === messagesRaw.length
+      && isMessageListPrefix(localizedMessagesRef.current[targetLanguage] as Message[], messagesRaw);
+
+    if (messagesRaw.length && !messageCacheFresh) {
+      tasks.push(
+        ensureLocalizedMessages(targetLanguage).then((localized) => {
+          if (jobId !== activeLocalizationJobRef.current) return;
+          setMessages(localized);
+        }),
+      );
+    }
+
+    await Promise.all(tasks);
+  };
+
+  useEffect(() => {
+    if (!preferencesLoaded) return;
+    void syncLocalizedContent(language);
+  }, [
+    language,
+    preferencesLoaded,
+    easyReadRaw,
+    checklistGuideRaw,
+    stepByStepGuideRaw,
+    headingsRaw,
+    messagesRaw,
+  ]);
+
+  useEffect(() => {
+    if (!easyReadRaw) return;
+    localizedEasyReadRef.current = { en: easyReadRaw, zh: null, ms: null, ta: null };
+    void (async () => {
+      for (const lang of SUPPORTED_LANGUAGES) {
+        if (lang === 'en') continue;
+        if (localizedEasyReadRef.current[lang]) continue;
+        await ensureLocalizedEasyRead(lang);
+      }
+    })();
+  }, [easyReadRaw]);
+
+  useEffect(() => {
+    if (!checklistGuideRaw) return;
+    localizedChecklistRef.current = { en: checklistGuideRaw, zh: null, ms: null, ta: null };
+    void (async () => {
+      for (const lang of SUPPORTED_LANGUAGES) {
+        if (lang === 'en') continue;
+        if (localizedChecklistRef.current[lang]) continue;
+        await ensureLocalizedChecklist(lang);
+      }
+    })();
+  }, [checklistGuideRaw]);
+
+  useEffect(() => {
+    if (!stepByStepGuideRaw) return;
+    localizedStepByStepRef.current = { en: stepByStepGuideRaw, zh: null, ms: null, ta: null };
+    void (async () => {
+      for (const lang of SUPPORTED_LANGUAGES) {
+        if (lang === 'en') continue;
+        if (localizedStepByStepRef.current[lang]) continue;
+        await ensureLocalizedStepByStep(lang);
+      }
+    })();
+  }, [stepByStepGuideRaw]);
+
+  useEffect(() => {
+    localizedHeadingsRef.current = { en: headingsRaw, zh: null, ms: null, ta: null };
+    if (!headingsRaw.length) return;
+    void (async () => {
+      for (const lang of SUPPORTED_LANGUAGES) {
+        if (lang === 'en') continue;
+        if (localizedHeadingsRef.current[lang]) continue;
+        await ensureLocalizedHeadings(lang);
+      }
+    })();
+  }, [headingsRaw]);
+
+  useEffect(() => {
+    localizedMessagesRef.current = { en: messagesRaw, zh: null, ms: null, ta: null };
+    if (!messagesRaw.length) return;
+    void (async () => {
+      for (const lang of SUPPORTED_LANGUAGES) {
+        if (lang === 'en') continue;
+        if (localizedMessagesRef.current[lang]) continue;
+        await ensureLocalizedMessages(lang);
+      }
+    })();
+  }, [messagesRaw]);
+
   const getUrlForSimplify = async (): Promise<string> => {
     if (currentUrl) return currentUrl;
     const tabs = await browser.tabs.query({ active: true, currentWindow: true });
@@ -792,7 +1302,7 @@ function App() {
     const snapshot = {
       title: pageTitle,
       url: currentUrl,
-      headings: headings.slice(0, 40).map((h) => ({ text: h.text, level: h.level })),
+      headings: headingsRaw.slice(0, 40).map((h) => ({ text: h.text, level: h.level })),
       paragraphs: pageParagraphs.slice(0, 18),
       interactions: pageInteractions.slice(0, 80),
     };
@@ -863,7 +1373,7 @@ function App() {
         attempt === 0
           ? ''
           : '\n\nYour previous attempt was too generic. You MUST ground steps in INTERACTIONS labels and avoid any web-search advice.\n';
-      const completion = await sendTextCompletion(prompt + extra, 0.2);
+      const completion = await sendTextCompletion(prompt + extra, { temperature: 0.2 });
       const obj = parseModelJson(completion.response);
       if (!obj || typeof obj !== 'object') continue;
 
@@ -892,16 +1402,17 @@ function App() {
       console.log('[Sidepanel] Calling simplifyPage API with URL:', url);
       console.log('[Sidepanel] Session ID:', sessionId);
 
-      // Call the real API
-      const response = await simplifyPage(url, 'easy_read', language, sessionId);
       if (mode === 'checklist' || mode === 'step_by_step') {
-        const hasSnapshot = pageInteractions.length > 0 || pageParagraphs.length > 0 || headings.length > 0;
+        const hasSnapshot =
+          pageInteractions.length > 0 || pageParagraphs.length > 0 || headingsRaw.length > 0;
         if (hasSnapshot) {
           const normalized = await generateGuideFromPageSnapshot(mode);
           if (mode === 'checklist') {
+            setChecklistGuideRaw(normalized.checklist);
             setChecklistGuide(normalized.checklist);
             setHasChecklist(!!normalized.checklist);
           } else {
+            setStepByStepGuideRaw(normalized.stepByStep);
             setStepByStepGuide(normalized.stepByStep);
             setHasSteps(!!normalized.stepByStep);
           }
@@ -912,31 +1423,18 @@ function App() {
       const response = await simplifyWithFallback(url, mode);
       const normalized = normalizeReadingPayload(response);
 
-      // Store context in session storage
-      setPageId(response.page_id);
-      setSimplificationId(response.simplification_ids.easy_read || '');
-      await storage.setItem(`session:pageId:${url}`, response.page_id);
-      await storage.setItem(`session:simplificationId:${url}`, response.simplification_ids.easy_read || '');
-
-      // Extract summary from easy_read output
-      const easyRead = response.outputs.easy_read;
-      if (easyRead) {
-        console.log('[Sidepanel] Extracted key_points:', easyRead.key_points);
-        const translatedBullets = await translateTextsIfNeeded(easyRead.key_points || []);
-        setSummary({
-          bullets: translatedBullets,
-        });
-      } else {
-        console.warn('[Sidepanel] No easy_read output in response');
-        setSummary({
-          bullets: [t('failed_summary')],
       const pageIdValue = normalized.pageId || response.page_id || '';
       if (pageIdValue) {
         setPageId(pageIdValue);
         await storage.setItem(`session:pageId:${url}`, pageIdValue);
       }
 
-      const ids = normalized.simplificationIds;
+      const ids = {
+        easy_read: normalized.simplificationIds.easy_read || response.simplification_ids?.easy_read,
+        checklist: normalized.simplificationIds.checklist || response.simplification_ids?.checklist,
+        step_by_step: normalized.simplificationIds.step_by_step || response.simplification_ids?.step_by_step,
+        intelligent: normalized.simplificationIds.intelligent || response.simplification_ids?.intelligent,
+      };
       const pickedId =
         mode === 'easy_read'
           ? ids.easy_read || ids.intelligent
@@ -949,46 +1447,65 @@ function App() {
       }
 
       if (normalized.easyRead) {
+        setEasyReadRaw(normalized.easyRead);
         setEasyRead(normalized.easyRead);
       } else if (mode === 'easy_read') {
-        setEasyRead({
+        const fallback: EasyReadOutput = {
           about: '',
-          key_points: ['Summary not available. Please try again.'],
+          key_points: [t('failed_summary')],
           glossary: [],
-        });
+        };
+        setEasyReadRaw(fallback);
+        setEasyRead(fallback);
       }
 
       if (normalized.checklist) {
+        setChecklistGuideRaw(normalized.checklist);
         setChecklistGuide(normalized.checklist);
         setHasChecklist(true);
       } else if (mode === 'checklist') {
+        setChecklistGuideRaw(null);
         setChecklistGuide(null);
         setHasChecklist(false);
       } else if (normalized.signals.hasChecklist !== null) {
         setHasChecklist(normalized.signals.hasChecklist);
-        if (normalized.signals.hasChecklist === false) setChecklistGuide(null);
+        if (normalized.signals.hasChecklist === false) {
+          setChecklistGuideRaw(null);
+          setChecklistGuide(null);
+        }
       }
 
       if (normalized.stepByStep) {
+        setStepByStepGuideRaw(normalized.stepByStep);
         setStepByStepGuide(normalized.stepByStep);
         setHasSteps(true);
       } else if (mode === 'step_by_step') {
+        setStepByStepGuideRaw(null);
         setStepByStepGuide(null);
         setHasSteps(false);
       } else if (normalized.signals.hasStepByStep !== null) {
         setHasSteps(normalized.signals.hasStepByStep);
-        if (normalized.signals.hasStepByStep === false) setStepByStepGuide(null);
+        if (normalized.signals.hasStepByStep === false) {
+          setStepByStepGuideRaw(null);
+          setStepByStepGuide(null);
+        }
       }
     } catch (error) {
-      console.error('[Sidepanel] Failed to generate summary:', error);
+      console.error('[Sidepanel] Failed to simplify:', error);
       console.error('[Sidepanel] Error details:', {
         message: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined
       });
-      setError(error instanceof Error ? error.message : 'Failed to generate summary');
-      setSummary({
-        bullets: [t('failed_summary')],
-      });
+      setError(error instanceof Error ? error.message : 'Failed to simplify');
+      if (mode === 'easy_read') {
+        const fallback: EasyReadOutput = {
+          about: '',
+          key_points: [t('failed_summary')],
+          glossary: [],
+        };
+        setEasyReadRaw(fallback);
+        setEasyRead(fallback);
+      }
     } finally {
       setIsSimplifying(false);
       setSimplifyingMode(null);
@@ -1018,7 +1535,8 @@ function App() {
         content: userPrompt,
         timestamp: new Date(),
       };
-      const updatedMessages = [...messages, userMessage];
+      const updatedMessages = [...messagesRaw, userMessage];
+      setMessagesRaw(updatedMessages);
       setMessages(updatedMessages);
       await storage.setItem(`local:chatMessages:${currentUrl}`, updatedMessages);
 
@@ -1038,6 +1556,7 @@ function App() {
           timestamp: new Date(),
         };
         const finalMessages = [...updatedMessages, assistantMessage];
+        setMessagesRaw(finalMessages);
         setMessages(finalMessages);
         await storage.setItem(`local:chatMessages:${currentUrl}`, finalMessages);
         maybeAutoReadAssistantReply(assistantMessage);
@@ -1052,6 +1571,7 @@ function App() {
           timestamp: new Date(),
         };
         const finalMessages = [...updatedMessages, errorMessage];
+        setMessagesRaw(finalMessages);
         setMessages(finalMessages);
         await storage.setItem(`local:chatMessages:${currentUrl}`, finalMessages);
         maybeAutoReadAssistantReply(errorMessage);
@@ -1072,7 +1592,8 @@ function App() {
       content: `${t('what_does_this_mean')} "${text.substring(0, 200)}${text.length > 200 ? '...' : ''}"`,
       timestamp: new Date(),
     };
-    const updatedMessages = [...messages, userMessage];
+    const updatedMessages = [...messagesRaw, userMessage];
+    setMessagesRaw(updatedMessages);
     setMessages(updatedMessages);
 
     // Save to local storage
@@ -1108,6 +1629,7 @@ function App() {
         timestamp: new Date(),
       };
       const finalMessages = [...updatedMessages, assistantMessage];
+      setMessagesRaw(finalMessages);
       setMessages(finalMessages);
 
       // Save to local storage
@@ -1124,6 +1646,7 @@ function App() {
         timestamp: new Date(),
       };
       const finalMessages = [...updatedMessages, errorMessage];
+      setMessagesRaw(finalMessages);
       setMessages(finalMessages);
       await storage.setItem(`local:chatMessages:${currentUrl}`, finalMessages);
       maybeAutoReadAssistantReply(errorMessage);
@@ -1166,17 +1689,13 @@ function App() {
           : [];
         console.log('[Sidepanel] Page loaded data:', message.data);
         console.log('[Sidepanel] Headings received:', rawHeadings);
+        setPageTitle(typeof message.data?.title === 'string' ? message.data.title : '');
+        setPageParagraphs(Array.isArray(message.data?.paragraphs) ? message.data.paragraphs : []);
+        setPageInteractions(Array.isArray(message.data?.interactions) ? message.data.interactions : []);
 
-        void (async () => {
-          const translatedTexts = await messageHandlersRef.current.translateTextsIfNeeded(
-            rawHeadings.map((heading) => heading.text),
-          );
-          const localizedHeadings = rawHeadings.map((heading, idx) => ({
-            ...heading,
-            text: translatedTexts[idx] || heading.text,
-          }));
-          setHeadings(localizedHeadings);
-        })();
+        localizedHeadingsRef.current = { en: rawHeadings, zh: null, ms: null, ta: null };
+        setHeadingsRaw(rawHeadings);
+        setHeadings(rawHeadings);
 
         void messageHandlersRef.current.generatePageSummary(message.data);
       }
@@ -1269,7 +1788,8 @@ function App() {
       content: text,
       timestamp: new Date(),
     };
-    const updatedMessages = [...messages, userMessage];
+    const updatedMessages = [...messagesRaw, userMessage];
+    setMessagesRaw(updatedMessages);
     setMessages(updatedMessages);
 
     // Save to local storage
@@ -1305,6 +1825,7 @@ function App() {
         timestamp: new Date(),
       };
       const finalMessages = [...updatedMessages, assistantMessage];
+      setMessagesRaw(finalMessages);
       setMessages(finalMessages);
 
       // Save to local storage
@@ -1321,6 +1842,7 @@ function App() {
         timestamp: new Date(),
       };
       const finalMessages = [...updatedMessages, errorMessage];
+      setMessagesRaw(finalMessages);
       setMessages(finalMessages);
       await storage.setItem(`local:chatMessages:${currentUrl}`, finalMessages);
       maybeAutoReadAssistantReply(errorMessage);
@@ -1937,10 +2459,11 @@ function App() {
                 )}
               </div>
             ) : (
-              <p className="text-gray-500 text-lg">
-                {t('loading_summary')}
-              </p>
-              <div className="space-y-4">
+              <>
+                <p className="text-gray-500 text-lg">
+                  {t('loading_summary')}
+                </p>
+                <div className="space-y-4">
                 {!stepByStepGuide ? (
                   <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
                     <div className="flex items-start justify-between gap-3">
@@ -2049,7 +2572,8 @@ function App() {
                     ) : null}
                   </>
                 )}
-              </div>
+                </div>
+              </>
             )}
           </div>
 
@@ -2147,32 +2671,6 @@ function App() {
                     </button>
                   </div>
                 </div>
-            {/* Zoom Controls */}
-            <div className="mb-3">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold text-gray-600">Zoom</span>
-                <button
-                  onClick={openSettings}
-                  className="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded transition-colors"
-                >
-                  Settings
-                </button>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={handleZoomOut}
-                  disabled={zoomLevel === 1}
-                  className="flex-1 px-4 py-3 rounded-lg text-xl font-bold bg-gray-100 hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                >
-                  -
-                </button>
-                <button
-                  onClick={handleZoomIn}
-                  disabled={zoomLevel === 1.5}
-                  className="flex-1 px-4 py-3 rounded-lg text-xl font-bold bg-gray-100 hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                >
-                  +
-                </button>
               </div>
 
               <button
@@ -2181,12 +2679,12 @@ function App() {
                 title={t('settings')}
                 aria-label={t('settings')}
               >
-                <span className="text-4xl leading-none" aria-hidden="true">⚙️</span>
+                <GearIcon className="w-10 h-10 text-gray-700" />
                 <span className="text-sm font-semibold text-gray-700">{t('settings')}</span>
               </button>
             </div>
 
-            {/* Other Controls */}
+            {/* Selection Mode Button */}
             <div className="flex items-center gap-2">
               <button
                 onClick={toggleSelectionMode}
@@ -2325,32 +2823,6 @@ function App() {
                     </button>
                   </div>
                 </div>
-            {/* Zoom Controls */}
-            <div className="mb-3">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold text-gray-600">Zoom</span>
-                <button
-                  onClick={openSettings}
-                  className="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded transition-colors"
-                >
-                  Settings
-                </button>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={handleZoomOut}
-                  disabled={zoomLevel === 1}
-                  className="flex-1 px-4 py-3 rounded-lg text-xl font-bold bg-gray-100 hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                >
-                  -
-                </button>
-                <button
-                  onClick={handleZoomIn}
-                  disabled={zoomLevel === 1.5}
-                  className="flex-1 px-4 py-3 rounded-lg text-xl font-bold bg-gray-100 hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                >
-                  +
-                </button>
               </div>
 
               <button
@@ -2359,12 +2831,12 @@ function App() {
                 title={t('settings')}
                 aria-label={t('settings')}
               >
-                <span className="text-4xl leading-none" aria-hidden="true">⚙️</span>
+                <GearIcon className="w-10 h-10 text-gray-700" />
                 <span className="text-sm font-semibold text-gray-700">{t('settings')}</span>
               </button>
             </div>
 
-            {/* Other Controls */}
+            {/* Selection Mode Button */}
             <div className="flex items-center gap-2">
               <button
                 onClick={toggleSelectionMode}
@@ -2518,7 +2990,7 @@ function App() {
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
                 placeholder={t('type_question')}
-                disabled={isLoading}
+                disabled={isChatLoading}
                 className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100 disabled:cursor-not-allowed"
               />
               <button
@@ -2599,7 +3071,7 @@ function App() {
                 title={t('settings')}
                 aria-label={t('settings')}
               >
-                <span className="text-4xl leading-none" aria-hidden="true">⚙️</span>
+                <GearIcon className="w-10 h-10 text-gray-700" />
                 <span className="text-sm font-semibold text-gray-700">{t('settings')}</span>
               </button>
             </div>

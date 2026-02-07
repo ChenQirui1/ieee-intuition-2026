@@ -1236,6 +1236,7 @@ function CognitiveNeedsScreen({
           {ui.back}
         </button>
         <button
+          ref={buttonRef}
           type="button"
           onClick={onNext}
           className="w-full md:flex-1 min-w-0 px-6 sm:px-8 py-4 bg-green-600 text-white text-lg sm:text-xl font-bold rounded-xl hover:bg-green-700 focus:outline-none focus:ring-4 focus:ring-green-300 transition-all whitespace-nowrap"
@@ -1243,13 +1244,6 @@ function CognitiveNeedsScreen({
           {ui.complete_setup}
         </button>
       </div>
-      <button
-        ref={buttonRef}
-        onClick={onNext}
-        className="w-full px-8 py-4 bg-green-600 text-white text-xl font-bold rounded-xl hover:bg-green-700 focus:outline-none focus:ring-4 focus:ring-green-300 transition-all"
-      >
-        Complete Setup ✓
-      </button>
     </div>
   );
 }

@@ -64,6 +64,8 @@ let activeTranslateJobId = 0;
 let preferredPageLanguage: LanguageCode = DEFAULT_USER_PREFERENCES.language;
 let currentPageLanguageMode: PageLanguageMode = 'preferred';
 let preferredLanguageRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let translationInProgress = false;
+let translationInProgressJobId = 0;
 
 function startTranslationJob(): number {
   activeTranslateJobId += 1;
@@ -164,12 +166,13 @@ async function applyPreferredLanguage(targetLanguage: LanguageCode, jobId: numbe
 
   const textToNodes = new Map<string, Text[]>();
   for (const node of nodes) {
-    const original = node.nodeValue ?? '';
+    const currentValue = node.nodeValue ?? '';
+    const originalValue = originalTextByNode.get(node) ?? currentValue;
     if (!originalTextByNode.has(node)) {
-      originalTextByNode.set(node, original);
+      originalTextByNode.set(node, currentValue);
     }
 
-    const { core } = splitWhitespace(original);
+    const { core } = splitWhitespace(originalValue);
     const key = core.trim();
     if (!key) continue;
 
@@ -182,24 +185,35 @@ async function applyPreferredLanguage(targetLanguage: LanguageCode, jobId: numbe
   const uniqueKeys = Array.from(textToNodes.keys());
   const needsTranslation = uniqueKeys.filter((k) => !cache.has(k));
 
-  for (const batch of chunk(needsTranslation, TRANSLATE_CHUNK_SIZE)) {
-    if (jobId !== activeTranslateJobId) return;
-    const translated = await requestTranslations(batch, targetLanguage);
-    if (jobId !== activeTranslateJobId) return;
-    for (let i = 0; i < batch.length; i += 1) {
-      cache.set(batch[i], translated[i] ?? batch[i]);
-    }
-  }
-
-  if (jobId !== activeTranslateJobId) return;
-
-  for (const [key, nodeList] of textToNodes) {
-    const translated = cache.get(key) ?? key;
+  const applyKey = (key: string, translated: string) => {
+    const nodeList = textToNodes.get(key);
+    if (!nodeList || !nodeList.length) return;
     for (const node of nodeList) {
       const original = originalTextByNode.get(node) ?? (node.nodeValue ?? '');
       const { leading, trailing } = splitWhitespace(original);
       node.nodeValue = `${leading}${translated}${trailing}`;
       touchedTextNodes.add(node);
+    }
+  };
+
+  // Apply any cached translations immediately so the page updates without waiting for network.
+  for (const key of uniqueKeys) {
+    const cached = cache.get(key);
+    if (typeof cached === 'string' && cached.trim()) {
+      applyKey(key, cached);
+    }
+  }
+
+  for (const batch of chunk(needsTranslation, TRANSLATE_CHUNK_SIZE)) {
+    if (jobId !== activeTranslateJobId) return;
+    const translated = await requestTranslations(batch, targetLanguage);
+    if (jobId !== activeTranslateJobId) return;
+
+    for (let i = 0; i < batch.length; i += 1) {
+      const key = batch[i];
+      const value = translated[i] ?? key;
+      cache.set(key, value);
+      applyKey(key, value);
     }
   }
 }
@@ -212,16 +226,29 @@ async function applyPageLanguageMode(mode: PageLanguageMode, targetLanguage: Lan
     return;
   }
 
-  restoreOriginalLanguage();
-  await applyPreferredLanguage(targetLanguage, jobId);
+  translationInProgress = true;
+  translationInProgressJobId = jobId;
+  try {
+    await applyPreferredLanguage(targetLanguage, jobId);
+  } finally {
+    if (translationInProgressJobId === jobId) {
+      translationInProgress = false;
+    }
+  }
 }
 
 function schedulePreferredLanguageRefresh(delayMs: number = 1200) {
-  if (currentPageLanguageMode !== 'preferred') return;
   if (preferredLanguageRefreshTimer) {
     clearTimeout(preferredLanguageRefreshTimer);
+    preferredLanguageRefreshTimer = null;
   }
+  if (currentPageLanguageMode !== 'preferred') return;
   preferredLanguageRefreshTimer = setTimeout(() => {
+    if (currentPageLanguageMode !== 'preferred') return;
+    if (translationInProgress) {
+      schedulePreferredLanguageRefresh(1200);
+      return;
+    }
     void applyPageLanguageMode('preferred', preferredPageLanguage);
   }, delayMs);
 }

@@ -3,10 +3,10 @@
  */
 
 // Production
-//const API_BASE_URL = 'https://ieee-intuition-2026-production.up.railway.app';
+const API_BASE_URL = 'https://ieee-intuition-2026-production.up.railway.app';
 
-// Local development (uncomment for local testing)
-const API_BASE_URL = 'http://127.0.0.1:8000';
+//Local development (uncomment for local testing)
+//const API_BASE_URL = 'http://127.0.0.1:8000';
 
 export type LanguageCode = 'en' | 'zh' | 'ms' | 'ta';
 
@@ -69,7 +69,7 @@ export interface ChatResponse {
  */
 export async function simplifyPage(
   url: string,
-  mode: 'easy_read' | 'checklist' | 'step_by_step' | 'all' = 'all',
+  mode: 'easy_read' | 'checklist' | 'step_by_step' | 'all' | 'intelligent' = 'all',
   language: LanguageCode = 'en',
   sessionId?: string,
   forceRegen: boolean = false
