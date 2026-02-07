@@ -14,8 +14,20 @@ interface UserPreferences {
   hideAds: boolean;
   simplifyLanguage: boolean;
   showBreadcrumbs: boolean;
+  // Audio (Text-to-Speech)
+  ttsRate: number;
+  autoReadAssistant: boolean;
   profileName: string;
 }
+
+const TTS_RATE_OPTIONS: Array<{ value: number; label: string }> = [
+  { value: 0.5, label: '0.5x' },
+  { value: 0.75, label: '0.75x' },
+  { value: 1, label: '1x' },
+  { value: 1.25, label: '1.25x' },
+  { value: 1.5, label: '1.5x' },
+  { value: 2, label: '2x' },
+];
 
 function App() {
   const [step, setStep] = useState<OnboardingStep>('welcome');
@@ -26,12 +38,14 @@ function App() {
     hideAds: false,
     simplifyLanguage: false,
     showBreadcrumbs: false,
+    ttsRate: 1,
+    autoReadAssistant: false,
     profileName: 'My Profile',
   });
 
-  const startButtonRef = useRef<HTMLButtonElement>(null);
-  const visualButtonRef = useRef<HTMLButtonElement>(null);
-  const cognitiveButtonRef = useRef<HTMLButtonElement>(null);
+  const startButtonRef = useRef<HTMLButtonElement | null>(null);
+  const visualButtonRef = useRef<HTMLButtonElement | null>(null);
+  const cognitiveButtonRef = useRef<HTMLInputElement | null>(null);
 
   // Auto-focus on mount and step changes
   useEffect(() => {
@@ -121,7 +135,7 @@ function WelcomeScreen({
   buttonRef,
 }: {
   onStart: () => void;
-  buttonRef: React.RefObject<HTMLButtonElement>;
+  buttonRef: React.RefObject<HTMLButtonElement | null>;
 }) {
   return (
     <div className="bg-white rounded-2xl shadow-2xl p-16 text-center">
@@ -163,7 +177,7 @@ function VisualNeedsScreen({
     value: UserPreferences[K]
   ) => void;
   onNext: () => void;
-  buttonRef: React.RefObject<HTMLButtonElement>;
+  buttonRef: React.RefObject<HTMLButtonElement | null>;
 }) {
   return (
     <div className="bg-white rounded-2xl shadow-2xl p-12">
@@ -381,8 +395,35 @@ function CognitiveNeedsScreen({
     value: UserPreferences[K]
   ) => void;
   onNext: () => void;
-  buttonRef: React.RefObject<HTMLButtonElement>;
+  buttonRef: React.RefObject<HTMLInputElement | null>;
 }) {
+  const isTtsSupported =
+    typeof window !== 'undefined'
+    && 'speechSynthesis' in window
+    && 'SpeechSynthesisUtterance' in window;
+
+  useEffect(() => {
+    return () => {
+      try {
+        window.speechSynthesis?.cancel();
+      } catch {
+        // ignore
+      }
+    };
+  }, []);
+
+  const playTtsPreview = () => {
+    if (!isTtsSupported) return;
+    const synth = window.speechSynthesis;
+    synth.cancel();
+
+    const utterance = new SpeechSynthesisUtterance(
+      'Preview: ClearWeb can read text out loud for you.',
+    );
+    utterance.rate = preferences.ttsRate || 1;
+    synth.speak(utterance);
+  };
+
   return (
     <div className="bg-white rounded-2xl shadow-2xl p-12">
       <div className="mb-8">
@@ -465,6 +506,96 @@ function CognitiveNeedsScreen({
             aria-label="Show breadcrumbs toggle"
           />
         </label>
+
+        <div
+          className={`p-6 rounded-xl border-2 transition-all ${
+            preferences.ttsRate !== 1 || preferences.autoReadAssistant
+              ? 'border-blue-600 bg-blue-50'
+              : 'border-gray-300 hover:border-blue-400'
+          }`}
+        >
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex items-start gap-4">
+              <div className="text-4xl">🔊</div>
+              <div>
+                <h3 className="text-2xl font-bold text-gray-900">Read Aloud</h3>
+                <p className="text-gray-600">Listen to summaries, headings, and chat replies</p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={playTtsPreview}
+              disabled={!isTtsSupported}
+              className="px-4 py-2 text-sm font-semibold bg-white border-2 border-gray-200 rounded-xl shadow-sm hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+            >
+              ▶ Preview
+            </button>
+          </div>
+
+          {!isTtsSupported && (
+            <p className="mt-2 text-sm text-gray-500">
+              Read aloud is not supported in this browser.
+            </p>
+          )}
+
+          <div className="mt-4">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-sm font-semibold text-gray-800">Speed</p>
+              <p className="text-sm text-gray-600">
+                Current: <span className="font-semibold">{preferences.ttsRate}x</span>
+              </p>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {TTS_RATE_OPTIONS.map((opt) => {
+                const selected = preferences.ttsRate === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => updatePreference('ttsRate', opt.value)}
+                    aria-pressed={selected}
+                    className={`px-3 py-2 rounded-lg text-sm font-semibold border transition-all ${
+                      selected
+                        ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                        : 'bg-white text-gray-800 border-gray-300 hover:border-blue-400 hover:bg-blue-50'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="mt-5 pt-4 border-t border-blue-100 flex items-center justify-between gap-4">
+            <div>
+              <p className="text-sm font-semibold text-gray-900">
+                Auto-read assistant replies
+              </p>
+              <p className="text-sm text-gray-600">
+                When ClearWeb answers in Chat, it reads the reply automatically.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <span className="text-sm font-semibold text-gray-700">
+                {preferences.autoReadAssistant ? 'On' : 'Off'}
+              </span>
+              <label className="relative inline-flex items-center cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={preferences.autoReadAssistant}
+                  onChange={(e) => updatePreference('autoReadAssistant', e.target.checked)}
+                  className="sr-only peer"
+                  aria-label="Auto-read assistant replies toggle"
+                />
+                <div className="w-14 h-8 bg-gray-200 rounded-full peer peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 peer-checked:bg-blue-600 transition-colors"></div>
+                <div className="absolute left-1 top-1 w-6 h-6 bg-white rounded-full shadow-sm transition-transform peer-checked:translate-x-6"></div>
+              </label>
+            </div>
+          </div>
+        </div>
       </div>
 
       <button
@@ -527,6 +658,14 @@ function SuccessScreen({ preferences }: { preferences: UserPreferences }) {
               Show Breadcrumbs enabled
             </li>
           )}
+          <li className="flex items-center gap-2">
+            <span className="text-blue-600">✓</span>
+            Read Aloud Speed: <strong>{preferences.ttsRate}x</strong>
+          </li>
+          <li className="flex items-center gap-2">
+            <span className="text-blue-600">✓</span>
+            Auto-read assistant replies: <strong>{preferences.autoReadAssistant ? 'On' : 'Off'}</strong>
+          </li>
         </ul>
       </div>
     </div>
@@ -616,6 +755,8 @@ function PreviewWindow({ preferences }: { preferences: UserPreferences }) {
           <li>• Ads: {preferences.hideAds ? 'Hidden' : 'Visible'}</li>
           <li>• Language: {preferences.simplifyLanguage ? 'Simple' : 'Standard'}</li>
           <li>• Breadcrumbs: {preferences.showBreadcrumbs ? 'On' : 'Off'}</li>
+          <li>• Read Aloud Speed: {preferences.ttsRate}x</li>
+          <li>• Auto-read replies: {preferences.autoReadAssistant ? 'On' : 'Off'}</li>
         </ul>
       </div>
     </div>
