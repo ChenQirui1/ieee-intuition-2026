@@ -15,6 +15,7 @@ from firebase_admin import firestore as fb_firestore
 
 # ---------------- Mock Firestore (local dev only) ----------------
 
+
 class MockDocSnap:
     def __init__(self, doc_id: str, data: Optional[Dict[str, Any]]):
         self.id = doc_id
@@ -29,7 +30,9 @@ class MockDocSnap:
 
 
 class MockDocument:
-    def __init__(self, collection_name: str, doc_id: str, store: Dict[str, Dict[str, Any]]):
+    def __init__(
+        self, collection_name: str, doc_id: str, store: Dict[str, Dict[str, Any]]
+    ):
         self.collection_name = collection_name
         self.id = doc_id
         self.store = store
@@ -67,6 +70,7 @@ class MockFirestore:
 
 # ---------------- Firestore init ----------------
 
+
 def get_firestore():
     """
     Initializes Firebase Admin (once) and returns a Firestore client.
@@ -87,7 +91,9 @@ def get_firestore():
                 service_account_dict = json.loads(service_account_json)
                 cred = credentials.Certificate(service_account_dict)
                 firebase_admin.initialize_app(cred)
-                print("[Firebase] Initialized from FIREBASE_SERVICE_ACCOUNT environment variable")
+                print(
+                    "[Firebase] Initialized from FIREBASE_SERVICE_ACCOUNT environment variable"
+                )
             except json.JSONDecodeError as e:
                 raise RuntimeError(f"FIREBASE_SERVICE_ACCOUNT is not valid JSON: {e}")
         else:
@@ -111,13 +117,16 @@ db = get_firestore()
 
 # ---------------- Utilities ----------------
 
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
 def server_timestamp() -> Any:
     """Real Firestore uses SERVER_TIMESTAMP; mock uses ISO string."""
-    return _now_iso() if isinstance(db, MockFirestore) else fb_firestore.SERVER_TIMESTAMP
+    return (
+        _now_iso() if isinstance(db, MockFirestore) else fb_firestore.SERVER_TIMESTAMP
+    )
 
 
 def sha256_hex(s: str) -> str:
@@ -128,7 +137,7 @@ def dump(x: Any) -> Any:
     """Convert Pydantic models to JSON-compatible dicts for Firestore."""
     if hasattr(x, "model_dump"):
         # Use mode='json' to ensure all nested types are JSON-serializable
-        return x.model_dump(mode='json')
+        return x.model_dump(mode="json")
     return x
 
 
@@ -145,7 +154,7 @@ def ensure_firestore_compatible(data: Any) -> Any:
 
     # Handle Pydantic models
     if hasattr(data, "model_dump"):
-        data = data.model_dump(mode='json')
+        data = data.model_dump(mode="json")
 
     # Handle dictionaries
     if isinstance(data, dict):
@@ -160,7 +169,7 @@ def ensure_firestore_compatible(data: Any) -> Any:
         return data
 
     # Handle datetime objects
-    if hasattr(data, 'isoformat'):
+    if hasattr(data, "isoformat"):
         return data.isoformat()
 
     # Fallback: convert to string
@@ -174,15 +183,19 @@ def ensure_firestore_compatible(data: Any) -> Any:
 
 # ---------------- Deterministic IDs ----------------
 
+
 def page_id_for_url(url: str) -> str:
     return sha256_hex(url)
 
 
-def simplification_id_for(*, url: str, mode: str, language: str, source_text_hash: str) -> str:
+def simplification_id_for(
+    *, url: str, mode: str, language: str, source_text_hash: str
+) -> str:
     return sha256_hex(f"{url}|{mode}|{language}|{source_text_hash}")
 
 
 # ---------------- Pages ----------------
+
 
 def get_or_create_page(
     *,
@@ -240,6 +253,8 @@ def save_page(
         "updated_at": server_timestamp(),
     }
 
+    print(f"Saving page {page_id} to Firestore with data: {doc}")
+
     db.collection(collection).document(page_id).set(doc, merge=True)
     return page_id
 
@@ -253,6 +268,7 @@ def get_page(*, page_id: str, collection: str = "pages") -> Optional[Dict[str, A
 
 # ---------------- Simplifications (cached per mode+language+hash) ----------------
 
+
 def get_simplification(
     *,
     url: str,
@@ -261,7 +277,9 @@ def get_simplification(
     source_text_hash: str,
     collection: str = "simplifications",
 ) -> Optional[Dict[str, Any]]:
-    sid = simplification_id_for(url=url, mode=mode, language=language, source_text_hash=source_text_hash)
+    sid = simplification_id_for(
+        url=url, mode=mode, language=language, source_text_hash=source_text_hash
+    )
     snap = db.collection(collection).document(sid).get()
     if not getattr(snap, "exists", False):
         return None
@@ -282,7 +300,9 @@ def save_simplification(
     session_id: Optional[str] = None,
     collection: str = "simplifications",
 ) -> str:
-    sid = simplification_id_for(url=url, mode=mode, language=language, source_text_hash=source_text_hash)
+    sid = simplification_id_for(
+        url=url, mode=mode, language=language, source_text_hash=source_text_hash
+    )
 
     doc: Dict[str, Any] = {
         "url": url,
