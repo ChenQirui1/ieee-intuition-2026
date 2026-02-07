@@ -547,12 +547,15 @@ function handleGetPageContent() {
   const paragraphs = Array.from(document.querySelectorAll('p'))
     .map((p) => p.textContent?.trim())
     .filter((text) => text && text.length > 50)
-    .slice(0, 10);
+    .slice(0, 18);
+
+  const interactions = extractInteractiveSummary();
 
   const pageData = {
     title,
     headings,
     paragraphs,
+    interactions,
     url: window.location.href,
   };
 
@@ -566,6 +569,182 @@ function handleGetPageContent() {
 
   console.log('[IEEE Extension] Page content extracted:', pageData);
   console.log('[IEEE Extension] Found headings:', headings.length);
+}
+
+function extractInteractiveSummary(): string[] {
+  const unique = new Set<string>();
+
+  const isVisible = (el: Element): boolean => {
+    const element = el as HTMLElement;
+    if (!element.getBoundingClientRect) return false;
+    const rect = element.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    if (style.opacity === '0') return false;
+    return true;
+  };
+
+  const clean = (s: string) => s.replace(/\s+/g, ' ').trim();
+
+  const ariaLabelledByText = (el: HTMLElement): string => {
+    const ids = (el.getAttribute('aria-labelledby') || '')
+      .split(/\s+/g)
+      .map((x) => x.trim())
+      .filter(Boolean);
+    const parts: string[] = [];
+    for (const id of ids) {
+      const ref = document.getElementById(id);
+      const txt = clean(ref?.textContent || '');
+      if (txt) parts.push(txt);
+    }
+    return parts.join(' ');
+  };
+
+  const labelForInput = (input: HTMLElement): string => {
+    const id = input.getAttribute('id');
+    if (id) {
+      const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+      const txt = clean(label?.textContent || '');
+      if (txt) return txt;
+    }
+
+    const wrappedLabel = input.closest('label');
+    const wrappedTxt = clean(wrappedLabel?.textContent || '');
+    if (wrappedTxt) return wrappedTxt;
+
+    return '';
+  };
+
+  const accessibleName = (el: HTMLElement): string => {
+    const aria = clean(el.getAttribute('aria-label') || '');
+    if (aria) return aria;
+    const labelledBy = ariaLabelledByText(el);
+    if (labelledBy) return labelledBy;
+
+    const title = clean(el.getAttribute('title') || '');
+    if (title) return title;
+
+    const text = clean(el.textContent || '');
+    if (text) return text;
+
+    const placeholder = clean(el.getAttribute('placeholder') || '');
+    if (placeholder) return placeholder;
+
+    const name = clean(el.getAttribute('name') || '');
+    if (name) return name;
+
+    const id = clean(el.getAttribute('id') || '');
+    if (id) return id;
+
+    return '';
+  };
+
+  const describe = (el: HTMLElement): string | null => {
+    if (el.closest('[data-ieee-extension]')) return null;
+    if (!isVisible(el)) return null;
+
+    const tag = el.tagName.toLowerCase();
+
+    if (tag === 'a') {
+      const href = (el as HTMLAnchorElement).href || '';
+      if (!href || href.startsWith('javascript:') || href.startsWith('mailto:') || href.startsWith('tel:')) {
+        return null;
+      }
+      const name = accessibleName(el).slice(0, 80);
+      if (!name) return null;
+      return `LINK: "${name}" href="${href}"`;
+    }
+
+    if (tag === 'button') {
+      const name = accessibleName(el).slice(0, 80);
+      if (!name) return null;
+      return `BUTTON: "${name}"`;
+    }
+
+    if (tag === 'input') {
+      const input = el as HTMLInputElement;
+      const type = (input.type || 'text').toLowerCase();
+      if (type === 'hidden') return null;
+
+      // Treat submit/button as buttons
+      if (type === 'submit' || type === 'button' || type === 'reset') {
+        const name = accessibleName(el).slice(0, 80);
+        if (!name) return null;
+        return `BUTTON: "${name}"`;
+      }
+
+      const label = clean(labelForInput(el));
+      const placeholder = clean(input.placeholder || '');
+      const name = label || placeholder || accessibleName(el);
+      if (!name) return null;
+
+      const extra: string[] = [];
+      if (label) extra.push(`label="${label.slice(0, 80)}"`);
+      if (placeholder) extra.push(`placeholder="${placeholder.slice(0, 80)}"`);
+
+      const kind = type === 'checkbox' ? 'CHECKBOX' : type === 'radio' ? 'RADIO' : `INPUT(${type})`;
+      return `${kind}: "${name.slice(0, 80)}"${extra.length ? ' ' + extra.join(' ') : ''}`;
+    }
+
+    if (tag === 'select') {
+      const select = el as HTMLSelectElement;
+      const label = clean(labelForInput(el));
+      const name = label || accessibleName(el);
+      const options = Array.from(select.options)
+        .map((o) => clean(o.textContent || ''))
+        .filter(Boolean)
+        .slice(0, 6);
+
+      if (!name) return null;
+      const extra = options.length ? ` options=${JSON.stringify(options)}` : '';
+      return `SELECT: "${name.slice(0, 80)}"${extra}`;
+    }
+
+    if (tag === 'textarea') {
+      const label = clean(labelForInput(el));
+      const placeholder = clean(el.getAttribute('placeholder') || '');
+      const name = label || placeholder || accessibleName(el);
+      if (!name) return null;
+      const extra: string[] = [];
+      if (label) extra.push(`label="${label.slice(0, 80)}"`);
+      if (placeholder) extra.push(`placeholder="${placeholder.slice(0, 80)}"`);
+      return `TEXTAREA: "${name.slice(0, 80)}"${extra.length ? ' ' + extra.join(' ') : ''}`;
+    }
+
+    // Fallback for ARIA-based buttons/links (rarely needed)
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    if (role === 'button' || role === 'link') {
+      const name = accessibleName(el).slice(0, 80);
+      if (!name) return null;
+      return `${role.toUpperCase()}: "${name}"`;
+    }
+
+    return null;
+  };
+
+  const candidates = Array.from(
+    document.querySelectorAll('button, a[href], input, select, textarea, [role="button"], [role="link"]')
+  ) as HTMLElement[];
+
+  const described = candidates
+    .map((el) => {
+      const rect = el.getBoundingClientRect();
+      return { top: rect.top, left: rect.left, desc: describe(el) };
+    })
+    .filter((x) => Boolean(x.desc))
+    .sort((a, b) => (a.top - b.top) || (a.left - b.left));
+
+  const out: string[] = [];
+  for (const item of described) {
+    const desc = item.desc as string;
+    if (unique.has(desc)) continue;
+    unique.add(desc);
+    out.push(desc);
+    if (out.length >= 80) break;
+  }
+
+  return out;
 }
 
 /**
