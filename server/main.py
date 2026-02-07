@@ -4,8 +4,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-# Load environment variables first
-load_dotenv()
 
 # Database imports - uses factory pattern to select implementation
 from database import get_database
@@ -14,6 +12,8 @@ from database import get_database
 from api.routes import router as main_router
 from api.test_routes import router as test_router
 
+# Load environment variables first
+load_dotenv()
 
 # Initialize database (automatically selects based on DATABASE_TYPE env var)
 db = get_database()
