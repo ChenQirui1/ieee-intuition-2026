@@ -1151,8 +1151,12 @@ function applyAccessibilityStyles(preferences: UserPreferences) {
     css += `
       a, a:link, a:visited {
         background-color: #FEF08A !important;
-        padding: 2px 4px !important;
-        border-radius: 2px !important;
+        background-image: linear-gradient(#FEF08A, #FEF08A) !important;
+        box-decoration-break: clone !important;
+        -webkit-box-decoration-break: clone !important;
+        padding: 0 !important;
+        border-radius: 0 !important;
+        text-decoration: none !important;
       }
     `;
   } else if (effectivePreferences.linkStyle === 'border') {

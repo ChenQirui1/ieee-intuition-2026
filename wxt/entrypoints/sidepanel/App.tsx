@@ -196,7 +196,7 @@ const UI_STRINGS: Record<LanguageCode, Record<string, string>> = {
     refresh: "Refresh",
     loading_summary: "Loading page summary...",
     failed_summary:
-      "Failed to load summary. Make sure the backend server is running.",
+      "No summary available for this page.",
     no_headings: "No headings found on this page.",
     try_refresh: "Try clicking the Refresh button above.",
     no_conversation: "No conversation yet",
@@ -224,9 +224,9 @@ const UI_STRINGS: Record<LanguageCode, Record<string, string>> = {
     describe_image: "Describe this image.",
     what_does_this_mean: "What does this mean:",
     image_caption_error:
-      "Sorry, I could not caption that image. Please make sure the backend server is running.",
+      "No description available for this image.",
     text_error:
-      "Sorry, I could not process your request. Please make sure the backend server is running.",
+      "No information available. Please try again.",
   },
   zh: {
     mode_easy_read: "易读",
@@ -255,7 +255,7 @@ const UI_STRINGS: Record<LanguageCode, Record<string, string>> = {
     table_of_contents: "目录",
     refresh: "刷新",
     loading_summary: "正在加载页面摘要...",
-    failed_summary: "无法加载摘要。请确认后端服务器正在运行。",
+    failed_summary: "此页面无可用摘要。",
     no_headings: "此页面未找到标题。",
     try_refresh: "请点击上方的刷新按钮。",
     no_conversation: "还没有对话",
@@ -283,8 +283,8 @@ const UI_STRINGS: Record<LanguageCode, Record<string, string>> = {
     describe_image: "描述这张图片。",
     what_does_this_mean: "这是什么意思：",
     image_caption_error:
-      "抱歉，我无法为这张图片生成描述。请确认后端服务器正在运行。",
-    text_error: "抱歉，我无法处理你的请求。请确认后端服务器正在运行。",
+      "此图片无可用描述。",
+    text_error: "无可用信息。请重试。",
   },
   ms: {
     mode_easy_read: "Mudah Baca",
@@ -314,7 +314,7 @@ const UI_STRINGS: Record<LanguageCode, Record<string, string>> = {
     refresh: "Muat semula",
     loading_summary: "Memuatkan ringkasan halaman...",
     failed_summary:
-      "Gagal memuat ringkasan. Pastikan pelayan belakang sedang berjalan.",
+      "Tiada ringkasan tersedia untuk halaman ini.",
     no_headings: "Tiada tajuk ditemui pada halaman ini.",
     try_refresh: "Cuba tekan butang Muat semula di atas.",
     no_conversation: "Belum ada perbualan",
@@ -342,9 +342,9 @@ const UI_STRINGS: Record<LanguageCode, Record<string, string>> = {
     describe_image: "Terangkan imej ini.",
     what_does_this_mean: "Apa maksud ini:",
     image_caption_error:
-      "Maaf, saya tidak dapat menerangkan imej itu. Pastikan pelayan belakang sedang berjalan.",
+      "Tiada penerangan tersedia untuk imej ini.",
     text_error:
-      "Maaf, saya tidak dapat memproses permintaan anda. Pastikan pelayan belakang sedang berjalan.",
+      "Tiada maklumat tersedia. Sila cuba lagi.",
   },
   ta: {
     mode_easy_read: "எளிதாக படிக்கலாம்",
@@ -374,7 +374,7 @@ const UI_STRINGS: Record<LanguageCode, Record<string, string>> = {
     refresh: "புதுப்பி",
     loading_summary: "பக்க சுருக்கம் ஏற்றப்படுகிறது...",
     failed_summary:
-      "சுருக்கத்தை ஏற்ற முடியவில்லை. பின்தள சேவையகம் இயங்குகிறதா என்று சரிபார்க்கவும்.",
+      "இந்த பக்கத்திற்கு சுருக்கம் கிடைக்கவில்லை.",
     no_headings: "இந்த பக்கத்தில் தலைப்புகள் இல்லை.",
     try_refresh: "மேலுள்ள புதுப்பி பொத்தானை அழுத்தி பார்க்கவும்.",
     no_conversation: "இன்னும் உரையாடல் இல்லை",
@@ -402,9 +402,9 @@ const UI_STRINGS: Record<LanguageCode, Record<string, string>> = {
     describe_image: "இந்த படத்தை விவரிக்கவும்.",
     what_does_this_mean: "இதன் பொருள் என்ன:",
     image_caption_error:
-      "மன்னிக்கவும், அந்த படத்தை விவரிக்க முடியவில்லை. பின்தள சேவையகம் இயங்குகிறதா என்று சரிபார்க்கவும்.",
+      "இந்த படத்திற்கு விளக்கம் கிடைக்கவில்லை.",
     text_error:
-      "மன்னிக்கவும், உங்கள் கோரிக்கையை செயல்படுத்த முடியவில்லை. பின்தள சேவையகம் இயங்குகிறதா என்று சரிபார்க்கவும்.",
+      "தகவல் கிடைக்கவில்லை. மீண்டும் முயற்சிக்கவும்.",
   },
 };
 
@@ -1902,6 +1902,14 @@ function App() {
         };
         setEasyReadRaw(fallback);
         setEasyRead(fallback);
+      } else if (mode === "checklist") {
+        setChecklistGuideRaw(null);
+        setChecklistGuide(null);
+        setHasChecklist(false);
+      } else if (mode === "step_by_step") {
+        setStepByStepGuideRaw(null);
+        setStepByStepGuide(null);
+        setHasSteps(false);
       }
     } finally {
       setIsSimplifying(false);
@@ -2931,9 +2939,11 @@ function App() {
                     ) : null}
                   </div>
                 ) : (
-                  <p className="text-black text-base border-2 border-black bg-yellow-100 p-4 rounded-lg">
-                    Loading Easy Read...
-                  </p>
+                  <div className="space-y-3">
+                    <div className="h-4 bg-yellow-300 rounded animate-pulse border-2 border-black"></div>
+                    <div className="h-4 bg-yellow-300 rounded animate-pulse w-5/6 border-2 border-black"></div>
+                    <div className="h-4 bg-yellow-300 rounded animate-pulse w-4/6 border-2 border-black"></div>
+                  </div>
                 )}
               </>
             ) : readingMode === "checklist" ? (
@@ -2941,11 +2951,11 @@ function App() {
                 {!checklistGuide ? (
                   <div className="rounded-xl border-2 border-black bg-yellow-100 p-4 shadow-sm">
                     <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
+                      <div className="min-w-0 flex-1">
                         <p className="text-base font-semibold text-black">
                           Checklist
                         </p>
-                        <p className="mt-1 text-base text-black">
+                        <p className="mt-1 text-base text-black break-words">
                           {hasChecklist === false
                             ? "Checklist not available for this page."
                             : "Generate a checklist for this page."}
@@ -2972,12 +2982,12 @@ function App() {
                   <>
                     <div className="rounded-xl border-2 border-black bg-yellow-100 p-4 shadow-sm">
                       <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
+                        <div className="min-w-0 flex-1">
                           <p className="text-base font-semibold text-black">
                             Checklist
                           </p>
                           {checklistGuide.goal ? (
-                            <p className="mt-1 text-base text-black">
+                            <p className="mt-1 text-base text-black break-words">
                               {checklistGuide.goal}
                             </p>
                           ) : null}
@@ -3013,19 +3023,19 @@ function App() {
                                   }))
                                 }
                               />
-                              <div className="min-w-0">
+                              <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-2 flex-wrap">
-                                  <p className="text-base font-medium text-black">
+                                  <p className="text-base font-medium text-black break-words">
                                     {req.item}
                                   </p>
                                   {req.required ? (
-                                    <span className="text-base px-2 py-0.5 rounded-full bg-black text-yellow-400 border-2 border-black">
+                                    <span className="flex-none text-base px-2 py-0.5 rounded-full bg-black text-yellow-400 border-2 border-black whitespace-nowrap">
                                       Required
                                     </span>
                                   ) : null}
                                 </div>
                                 {req.details ? (
-                                  <p className="mt-1 text-base text-black leading-relaxed">
+                                  <p className="mt-1 text-base text-black leading-relaxed break-words">
                                     {req.details}
                                   </p>
                                 ) : null}
@@ -3058,19 +3068,19 @@ function App() {
                                   }))
                                 }
                               />
-                              <div className="min-w-0">
+                              <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-2 flex-wrap">
-                                  <p className="text-base font-medium text-black">
+                                  <p className="text-base font-medium text-black break-words">
                                     {doc.item}
                                   </p>
                                   {doc.required ? (
-                                    <span className="text-base px-2 py-0.5 rounded-full bg-black text-yellow-400 border-2 border-black">
+                                    <span className="flex-none text-base px-2 py-0.5 rounded-full bg-black text-yellow-400 border-2 border-black whitespace-nowrap">
                                       Required
                                     </span>
                                   ) : null}
                                 </div>
                                 {doc.details ? (
-                                  <p className="mt-1 text-base text-black leading-relaxed">
+                                  <p className="mt-1 text-base text-black leading-relaxed break-words">
                                     {doc.details}
                                   </p>
                                 ) : null}
@@ -3092,11 +3102,11 @@ function App() {
                               key={fee.id}
                               className="flex items-start justify-between gap-3 rounded-lg border-2 border-black bg-yellow-400 p-3"
                             >
-                              <span className="text-base font-medium text-black">
+                              <span className="text-base font-medium text-black break-words flex-1">
                                 {fee.item}
                               </span>
                               {fee.amount ? (
-                                <span className="text-base px-2 py-0.5 rounded-full bg-black text-yellow-400 border-2 border-black">
+                                <span className="flex-none text-base px-2 py-0.5 rounded-full bg-black text-yellow-400 border-2 border-black whitespace-nowrap">
                                   {fee.amount}
                                 </span>
                               ) : null}
@@ -3117,11 +3127,11 @@ function App() {
                               key={d.id}
                               className="flex items-start justify-between gap-3 rounded-lg border-2 border-black bg-yellow-400 p-3"
                             >
-                              <span className="text-base font-medium text-black">
+                              <span className="text-base font-medium text-black break-words flex-1">
                                 {d.item}
                               </span>
                               {d.date ? (
-                                <span className="text-base px-2 py-0.5 rounded-full bg-black text-yellow-400 border-2 border-black">
+                                <span className="flex-none text-base px-2 py-0.5 rounded-full bg-black text-yellow-400 border-2 border-black whitespace-nowrap">
                                   {d.date}
                                 </span>
                               ) : null}
@@ -3153,8 +3163,8 @@ function App() {
                                   }))
                                 }
                               />
-                              <div className="min-w-0">
-                                <p className="text-base font-medium text-black">
+                              <div className="min-w-0 flex-1">
+                                <p className="text-base font-medium text-black break-words">
                                   {act.item}
                                 </p>
                                 {act.url ? (
@@ -3184,7 +3194,7 @@ function App() {
                           {checklistGuide.common_mistakes.map((m, idx) => (
                             <li key={idx} className="flex items-start gap-3">
                               <span className="mt-2 w-2 h-2 rounded-full bg-black flex-none"></span>
-                              <span className="text-base text-black leading-relaxed">
+                              <span className="text-base text-black leading-relaxed break-words flex-1">
                                 {m}
                               </span>
                             </li>
@@ -3197,9 +3207,11 @@ function App() {
               </div>
             ) : (
               <>
-                <p className="text-black text-lg font-semibold border-2 border-black bg-yellow-100 p-4 rounded-lg">
-                  {t("loading_summary")}
-                </p>
+                <div className="space-y-3 mb-4">
+                  <div className="h-4 bg-yellow-300 rounded animate-pulse border-2 border-black"></div>
+                  <div className="h-4 bg-yellow-300 rounded animate-pulse w-5/6 border-2 border-black"></div>
+                  <div className="h-4 bg-yellow-300 rounded animate-pulse w-4/6 border-2 border-black"></div>
+                </div>
                 <div className="space-y-4">
                   {!stepByStepGuide ? (
                     <div className="rounded-xl border-2 border-black bg-yellow-100 p-4 shadow-sm">
@@ -3354,14 +3366,14 @@ function App() {
                   <button
                     onClick={handleZoomOut}
                     disabled={zoomLevel === 1}
-                    className="flex-1 px-4 py-3 rounded-lg text-xl font-bold bg-yellow-400 hover:bg-yellow-300 text-black border-2 border-black disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                    className="flex-1 px-4 py-3 rounded-lg text-xl font-bold bg-black hover:bg-yellow-400 text-yellow-400 hover:text-black border-2 border-black disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                   >
                     −
                   </button>
                   <button
                     onClick={handleZoomIn}
                     disabled={zoomLevel === 1.5}
-                    className="flex-1 px-4 py-3 rounded-lg text-xl font-bold bg-yellow-400 hover:bg-yellow-300 text-black border-2 border-black disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                    className="flex-1 px-4 py-3 rounded-lg text-xl font-bold bg-black hover:bg-yellow-400 text-yellow-400 hover:text-black border-2 border-black disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                   >
                     +
                   </button>
@@ -3437,7 +3449,7 @@ function App() {
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-base font-semibold text-black">
-                    {t("original")}
+                    {t("page_language")}
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -3463,7 +3475,7 @@ function App() {
                     }`}
                   >
                     {pageLanguageMode === "original"
-                      ? "ORIG"
+                      ? t("original")
                       : LANGUAGE_BADGE[language]}
                   </button>
                   <button
@@ -3482,10 +3494,10 @@ function App() {
             <div className="flex items-center gap-2">
               <button
                 onClick={toggleSelectionMode}
-                className={`flex-1 flex items-center justify-center gap-2 p-2 rounded-lg transition-colors border-2 border-black ${
+                className={`flex-1 flex items-center justify-center gap-2 py-3 px-2 rounded-lg transition-colors border-2 border-black ${
                   selectionMode
-                    ? "bg-black text-yellow-400 ring-2 ring-yellow-400"
-                    : "bg-yellow-400 text-black hover:bg-yellow-300"
+                    ? "bg-yellow-400 text-black ring-2 ring-black"
+                    : "bg-black text-yellow-400 hover:bg-gray-800"
                 }`}
               >
                 <SelectionIcon className="w-5 h-5" />
@@ -3495,10 +3507,10 @@ function App() {
               </button>
               <button
                 onClick={toggleMagnifyingMode}
-                className={`flex-1 flex items-center justify-center gap-2 p-2 rounded-lg transition-colors border-2 border-black ${
+                className={`flex-1 flex items-center justify-center gap-2 py-3 px-2 rounded-lg transition-colors border-2 border-black ${
                   magnifyingMode
-                    ? "bg-black text-yellow-400 ring-2 ring-yellow-400"
-                    : "bg-yellow-400 text-black hover:bg-yellow-300"
+                    ? "bg-yellow-400 text-black ring-2 ring-black"
+                    : "bg-black text-yellow-400 hover:bg-gray-800"
                 }`}
               >
                 <MagnifierIcon className="w-5 h-5" />
@@ -3565,14 +3577,14 @@ function App() {
                   <button
                     onClick={handleZoomOut}
                     disabled={zoomLevel === 1}
-                    className="flex-1 px-4 py-3 rounded-lg text-xl font-bold bg-yellow-400 hover:bg-yellow-300 text-black border-2 border-black disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                    className="flex-1 px-4 py-3 rounded-lg text-xl font-bold bg-black hover:bg-yellow-400 text-yellow-400 hover:text-black border-2 border-black disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                   >
                     −
                   </button>
                   <button
                     onClick={handleZoomIn}
                     disabled={zoomLevel === 1.5}
-                    className="flex-1 px-4 py-3 rounded-lg text-xl font-bold bg-yellow-400 hover:bg-yellow-300 text-black border-2 border-black disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                    className="flex-1 px-4 py-3 rounded-lg text-xl font-bold bg-black hover:bg-yellow-400 text-yellow-400 hover:text-black border-2 border-black disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                   >
                     +
                   </button>
@@ -3641,7 +3653,7 @@ function App() {
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-base font-semibold text-black">
-                    {t("original")}
+                    {t("page_language")}
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -3667,7 +3679,7 @@ function App() {
                     }`}
                   >
                     {pageLanguageMode === "original"
-                      ? "ORIG"
+                      ? t("original")
                       : LANGUAGE_BADGE[language]}
                   </button>
                   <button
@@ -3686,10 +3698,10 @@ function App() {
             <div className="flex items-center gap-2">
               <button
                 onClick={toggleSelectionMode}
-                className={`flex-1 flex items-center justify-center gap-2 p-2 rounded-lg transition-colors border-2 border-black ${
+                className={`flex-1 flex items-center justify-center gap-2 py-3 px-2 rounded-lg transition-colors border-2 border-black ${
                   selectionMode
-                    ? "bg-black text-yellow-400 ring-2 ring-yellow-400"
-                    : "bg-yellow-400 text-black hover:bg-yellow-300"
+                    ? "bg-yellow-400 text-black ring-2 ring-black"
+                    : "bg-black text-yellow-400 hover:bg-gray-800"
                 }`}
               >
                 <SelectionIcon className="w-5 h-5" />
@@ -3699,10 +3711,10 @@ function App() {
               </button>
               <button
                 onClick={toggleMagnifyingMode}
-                className={`flex-1 flex items-center justify-center gap-2 p-2 rounded-lg transition-colors border-2 border-black ${
+                className={`flex-1 flex items-center justify-center gap-2 py-3 px-2 rounded-lg transition-colors border-2 border-black ${
                   magnifyingMode
-                    ? "bg-black text-yellow-400 ring-2 ring-yellow-400"
-                    : "bg-yellow-400 text-black hover:bg-yellow-300"
+                    ? "bg-yellow-400 text-black ring-2 ring-black"
+                    : "bg-black text-yellow-400 hover:bg-gray-800"
                 }`}
               >
                 <MagnifierIcon className="w-5 h-5" />
@@ -3847,11 +3859,11 @@ function App() {
                 })}
                 {isChatLoading && (
                   <div className="flex justify-start">
-                    <div className="bg-white text-gray-900 shadow-md border border-gray-200 rounded-lg px-4 py-3">
+                    <div className="bg-black border-2 border-yellow-400 rounded-lg px-4 py-3">
                       <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
-                        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce delay-100"></div>
-                        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce delay-200"></div>
+                        <div className="w-2 h-2 bg-yellow-400 rounded-full animate-bounce"></div>
+                        <div className="w-2 h-2 bg-yellow-400 rounded-full animate-bounce delay-100"></div>
+                        <div className="w-2 h-2 bg-yellow-400 rounded-full animate-bounce delay-200"></div>
                       </div>
                     </div>
                   </div>
@@ -3896,14 +3908,14 @@ function App() {
                   <button
                     onClick={handleZoomOut}
                     disabled={zoomLevel === 1}
-                    className="flex-1 px-4 py-3 rounded-lg text-xl font-bold bg-yellow-400 hover:bg-yellow-300 text-black border-2 border-black disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                    className="flex-1 px-4 py-3 rounded-lg text-xl font-bold bg-black hover:bg-yellow-400 text-yellow-400 hover:text-black border-2 border-black disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                   >
                     −
                   </button>
                   <button
                     onClick={handleZoomIn}
                     disabled={zoomLevel === 1.5}
-                    className="flex-1 px-4 py-3 rounded-lg text-xl font-bold bg-yellow-400 hover:bg-yellow-300 text-black border-2 border-black disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                    className="flex-1 px-4 py-3 rounded-lg text-xl font-bold bg-black hover:bg-yellow-400 text-yellow-400 hover:text-black border-2 border-black disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                   >
                     +
                   </button>
@@ -3913,7 +3925,7 @@ function App() {
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-base font-semibold text-black">
-                    {t("original")}
+                    {t("page_language")}
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -3939,7 +3951,7 @@ function App() {
                     }`}
                   >
                     {pageLanguageMode === "original"
-                      ? "ORIG"
+                      ? t("original")
                       : LANGUAGE_BADGE[language]}
                   </button>
                   <button
@@ -3958,10 +3970,10 @@ function App() {
             <div className="flex items-center gap-2">
               <button
                 onClick={toggleSelectionMode}
-                className={`flex-1 flex items-center justify-center gap-2 p-2 rounded-lg transition-colors border-2 border-black ${
+                className={`flex-1 flex items-center justify-center gap-2 py-3 px-2 rounded-lg transition-colors border-2 border-black ${
                   selectionMode
-                    ? "bg-black text-yellow-400 ring-2 ring-yellow-400"
-                    : "bg-yellow-400 text-black hover:bg-yellow-300"
+                    ? "bg-yellow-400 text-black ring-2 ring-black"
+                    : "bg-black text-yellow-400 hover:bg-gray-800"
                 }`}
               >
                 <SelectionIcon className="w-5 h-5" />
@@ -3971,10 +3983,10 @@ function App() {
               </button>
               <button
                 onClick={toggleMagnifyingMode}
-                className={`flex-1 flex items-center justify-center gap-2 p-2 rounded-lg transition-colors border-2 border-black ${
+                className={`flex-1 flex items-center justify-center gap-2 py-3 px-2 rounded-lg transition-colors border-2 border-black ${
                   magnifyingMode
-                    ? "bg-black text-yellow-400 ring-2 ring-yellow-400"
-                    : "bg-yellow-400 text-black hover:bg-yellow-300"
+                    ? "bg-yellow-400 text-black ring-2 ring-black"
+                    : "bg-black text-yellow-400 hover:bg-gray-800"
                 }`}
               >
                 <MagnifierIcon className="w-5 h-5" />
