@@ -1,15 +1,15 @@
-import tocbot from 'tocbot';
-import { browser } from 'wxt/browser';
-import { storage } from '@wxt-dev/storage';
+import tocbot from "tocbot";
+import { browser } from "wxt/browser";
+import { storage } from "@wxt-dev/storage";
 
-type LanguageCode = 'en' | 'zh' | 'ms' | 'ta';
-type PageLanguageMode = 'preferred' | 'original';
+type LanguageCode = "en" | "zh" | "ms" | "ta";
+type PageLanguageMode = "preferred" | "original";
 
 interface UserPreferences {
   language: LanguageCode;
-  fontSize: 'standard' | 'large' | 'extra-large';
-  linkStyle: 'default' | 'underline' | 'highlight' | 'border';
-  contrastMode: 'standard' | 'high-contrast-yellow';
+  fontSize: "standard" | "large" | "extra-large";
+  linkStyle: "default" | "underline" | "highlight" | "border";
+  contrastMode: "standard" | "high-contrast-yellow";
   magnifyingZoomLevel: 1.5 | 2 | 2.5 | 3;
   hideAds: boolean;
   simplifyLanguage: boolean;
@@ -20,32 +20,32 @@ interface UserPreferences {
 }
 
 const DEFAULT_USER_PREFERENCES: UserPreferences = {
-  language: 'en',
-  fontSize: 'standard',
-  linkStyle: 'default',
-  contrastMode: 'standard',
+  language: "en",
+  fontSize: "standard",
+  linkStyle: "default",
+  contrastMode: "standard",
   magnifyingZoomLevel: 2.5,
   hideAds: false,
   simplifyLanguage: false,
   showBreadcrumbs: false,
   ttsRate: 1,
   autoReadAssistant: false,
-  profileName: 'My Profile',
+  profileName: "My Profile",
 };
 
 const SKIP_TRANSLATE_TAGS = new Set([
-  'SCRIPT',
-  'STYLE',
-  'NOSCRIPT',
-  'TEXTAREA',
-  'INPUT',
-  'SELECT',
-  'OPTION',
-  'CODE',
-  'PRE',
-  'SVG',
-  'CANVAS',
-  'IFRAME',
+  "SCRIPT",
+  "STYLE",
+  "NOSCRIPT",
+  "TEXTAREA",
+  "INPUT",
+  "SELECT",
+  "OPTION",
+  "CODE",
+  "PRE",
+  "SVG",
+  "CANVAS",
+  "IFRAME",
 ]);
 
 const TRANSLATE_MAX_TEXT_NODES = 5000;
@@ -62,7 +62,7 @@ const translationCache: Record<LanguageCode, Map<string, string>> = {
 
 let activeTranslateJobId = 0;
 let preferredPageLanguage: LanguageCode = DEFAULT_USER_PREFERENCES.language;
-let currentPageLanguageMode: PageLanguageMode = 'preferred';
+let currentPageLanguageMode: PageLanguageMode = "preferred";
 let preferredLanguageRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 let translationInProgress = false;
 let translationInProgressJobId = 0;
@@ -72,12 +72,16 @@ function startTranslationJob(): number {
   return activeTranslateJobId;
 }
 
-function splitWhitespace(value: string): { leading: string; core: string; trailing: string } {
+function splitWhitespace(value: string): {
+  leading: string;
+  core: string;
+  trailing: string;
+} {
   const match = value.match(/^(\s*)(.*?)(\s*)$/s);
   return {
-    leading: match?.[1] ?? '',
+    leading: match?.[1] ?? "",
     core: match?.[2] ?? value,
-    trailing: match?.[3] ?? '',
+    trailing: match?.[3] ?? "",
   };
 }
 
@@ -102,25 +106,23 @@ function collectTranslatableTextNodes(): Text[] {
   const root = document.body || document.documentElement;
   if (!root) return [];
 
-  const walker = document.createTreeWalker(
-    root,
-    NodeFilter.SHOW_TEXT,
-    {
-      acceptNode(node: Node) {
-        if (!(node instanceof Text)) return NodeFilter.FILTER_REJECT;
-        const parent = node.parentElement;
-        if (!parent) return NodeFilter.FILTER_REJECT;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node: Node) {
+      if (!(node instanceof Text)) return NodeFilter.FILTER_REJECT;
+      const parent = node.parentElement;
+      if (!parent) return NodeFilter.FILTER_REJECT;
 
-        if (parent.closest('[data-ieee-extension]')) return NodeFilter.FILTER_REJECT;
-        if (parent.isContentEditable) return NodeFilter.FILTER_REJECT;
-        if (SKIP_TRANSLATE_TAGS.has(parent.tagName)) return NodeFilter.FILTER_REJECT;
+      if (parent.closest("[data-ieee-extension]"))
+        return NodeFilter.FILTER_REJECT;
+      if (parent.isContentEditable) return NodeFilter.FILTER_REJECT;
+      if (SKIP_TRANSLATE_TAGS.has(parent.tagName))
+        return NodeFilter.FILTER_REJECT;
 
-        const text = node.nodeValue ?? '';
-        if (!shouldTranslateText(text)) return NodeFilter.FILTER_REJECT;
-        return NodeFilter.FILTER_ACCEPT;
-      },
-    } as unknown as NodeFilter,
-  );
+      const text = node.nodeValue ?? "";
+      if (!shouldTranslateText(text)) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  } as unknown as NodeFilter);
 
   const nodes: Text[] = [];
   while (nodes.length < TRANSLATE_MAX_TEXT_NODES && walker.nextNode()) {
@@ -129,22 +131,25 @@ function collectTranslatableTextNodes(): Text[] {
   return nodes;
 }
 
-async function requestTranslations(texts: string[], targetLanguage: LanguageCode): Promise<string[]> {
+async function requestTranslations(
+  texts: string[],
+  targetLanguage: LanguageCode,
+): Promise<string[]> {
   try {
     const response = await browser.runtime.sendMessage({
-      type: 'TRANSLATE_TEXTS',
+      type: "TRANSLATE_TEXTS",
       targetLanguage,
       texts,
     });
 
     if (response?.ok && Array.isArray(response.translations)) {
       return response.translations.map((t: unknown, idx: number) => {
-        if (typeof t === 'string' && t.trim()) return t;
-        return texts[idx] ?? '';
+        if (typeof t === "string" && t.trim()) return t;
+        return texts[idx] ?? "";
       });
     }
   } catch (error) {
-    console.warn('[IEEE Extension] Translation request failed:', error);
+    console.warn("[IEEE Extension] Translation request failed:", error);
   }
 
   return texts;
@@ -153,20 +158,23 @@ async function requestTranslations(texts: string[], targetLanguage: LanguageCode
 function restoreOriginalLanguage() {
   for (const node of Array.from(touchedTextNodes)) {
     const original = originalTextByNode.get(node);
-    if (typeof original === 'string') {
+    if (typeof original === "string") {
       node.nodeValue = original;
     }
   }
   touchedTextNodes.clear();
 }
 
-async function applyPreferredLanguage(targetLanguage: LanguageCode, jobId: number) {
+async function applyPreferredLanguage(
+  targetLanguage: LanguageCode,
+  jobId: number,
+) {
   const nodes = collectTranslatableTextNodes();
   if (nodes.length === 0) return;
 
   const textToNodes = new Map<string, Text[]>();
   for (const node of nodes) {
-    const currentValue = node.nodeValue ?? '';
+    const currentValue = node.nodeValue ?? "";
     const originalValue = originalTextByNode.get(node) ?? currentValue;
     if (!originalTextByNode.has(node)) {
       originalTextByNode.set(node, currentValue);
@@ -189,7 +197,7 @@ async function applyPreferredLanguage(targetLanguage: LanguageCode, jobId: numbe
     const nodeList = textToNodes.get(key);
     if (!nodeList || !nodeList.length) return;
     for (const node of nodeList) {
-      const original = originalTextByNode.get(node) ?? (node.nodeValue ?? '');
+      const original = originalTextByNode.get(node) ?? node.nodeValue ?? "";
       const { leading, trailing } = splitWhitespace(original);
       node.nodeValue = `${leading}${translated}${trailing}`;
       touchedTextNodes.add(node);
@@ -199,7 +207,7 @@ async function applyPreferredLanguage(targetLanguage: LanguageCode, jobId: numbe
   // Apply any cached translations immediately so the page updates without waiting for network.
   for (const key of uniqueKeys) {
     const cached = cache.get(key);
-    if (typeof cached === 'string' && cached.trim()) {
+    if (typeof cached === "string" && cached.trim()) {
       applyKey(key, cached);
     }
   }
@@ -218,10 +226,13 @@ async function applyPreferredLanguage(targetLanguage: LanguageCode, jobId: numbe
   }
 }
 
-async function applyPageLanguageMode(mode: PageLanguageMode, targetLanguage: LanguageCode) {
+async function applyPageLanguageMode(
+  mode: PageLanguageMode,
+  targetLanguage: LanguageCode,
+) {
   const jobId = startTranslationJob();
 
-  if (mode === 'original' || targetLanguage === 'en') {
+  if (mode === "original" || targetLanguage === "en") {
     restoreOriginalLanguage();
     return;
   }
@@ -242,21 +253,21 @@ function schedulePreferredLanguageRefresh(delayMs: number = 1200) {
     clearTimeout(preferredLanguageRefreshTimer);
     preferredLanguageRefreshTimer = null;
   }
-  if (currentPageLanguageMode !== 'preferred') return;
+  if (currentPageLanguageMode !== "preferred") return;
   preferredLanguageRefreshTimer = setTimeout(() => {
-    if (currentPageLanguageMode !== 'preferred') return;
+    if (currentPageLanguageMode !== "preferred") return;
     if (translationInProgress) {
       schedulePreferredLanguageRefresh(1200);
       return;
     }
-    void applyPageLanguageMode('preferred', preferredPageLanguage);
+    void applyPageLanguageMode("preferred", preferredPageLanguage);
   }, delayMs);
 }
 
 export default defineContentScript({
-  matches: ['<all_urls>'],
+  matches: ["<all_urls>"],
   main() {
-    console.log('[IEEE Extension] Content script loaded');
+    console.log("[IEEE Extension] Content script loaded");
     initInterpreter();
     initAccessibilityFeatures();
   },
@@ -269,24 +280,24 @@ function initInterpreter() {
   try {
     // Initialize click handler for sidepanel
     initClickHandler();
-    console.log('[IEEE Extension] Click handler initialized');
+    console.log("[IEEE Extension] Click handler initialized");
 
     // Initialize magnifying glass feature
     initMagnifyingGlass();
-    console.log('[IEEE Extension] Magnifying glass initialized');
+    console.log("[IEEE Extension] Magnifying glass initialized");
 
     // Listen for messages from sidepanel
     initMessageListener();
-    console.log('[IEEE Extension] Message listener initialized');
+    console.log("[IEEE Extension] Message listener initialized");
 
     // Notify sidepanel that page is loaded
     notifyPageLoaded();
 
-    window.addEventListener('load', () => {
+    window.addEventListener("load", () => {
       schedulePreferredLanguageRefresh(1200);
     });
   } catch (error) {
-    console.error('[IEEE Extension] Failed to initialize:', error);
+    console.error("[IEEE Extension] Failed to initialize:", error);
   }
 }
 
@@ -300,7 +311,7 @@ function initClickHandler() {
 
   // Listen for selection mode toggle from sidepanel
   browser.runtime.onMessage.addListener((message) => {
-    if (message.type === 'TOGGLE_SELECTION_MODE') {
+    if (message.type === "TOGGLE_SELECTION_MODE") {
       selectionMode = message.enabled;
 
       // Clear selection when turning off
@@ -314,18 +325,21 @@ function initClickHandler() {
         }
       }
 
-      console.log('[IEEE Extension] Selection mode', selectionMode ? 'enabled' : 'disabled');
+      console.log(
+        "[IEEE Extension] Selection mode",
+        selectionMode ? "enabled" : "disabled",
+      );
     }
   });
 
   // Add hover effect when selection mode is on
-  document.addEventListener('mouseover', (event) => {
+  document.addEventListener("mouseover", (event) => {
     if (!selectionMode) return;
 
     const target = event.target as HTMLElement;
 
     // Skip if hovering extension's own elements
-    if (target.closest('[data-ieee-extension]')) {
+    if (target.closest("[data-ieee-extension]")) {
       return;
     }
 
@@ -344,7 +358,7 @@ function initClickHandler() {
     addHoverHighlight(target);
   });
 
-  document.addEventListener('mouseout', (event) => {
+  document.addEventListener("mouseout", (event) => {
     if (!selectionMode) return;
 
     const target = event.target as HTMLElement;
@@ -354,99 +368,108 @@ function initClickHandler() {
     }
   });
 
-  document.addEventListener('click', (event) => {
-    // Only handle clicks when selection mode is ON
-    if (!selectionMode) {
-      return; // Allow normal clicking when selection mode is OFF
-    }
-
-    const target = event.target as HTMLElement;
-
-    // Skip if clicking on the extension's own elements
-    if (target.closest('[data-ieee-extension]')) {
-      return;
-    }
-
-    // Skip text nodes and document
-    if (target.nodeType !== Node.ELEMENT_NODE) {
-      return;
-    }
-
-    // Prevent default behavior when selection mode is ON
-    event.preventDefault();
-    event.stopPropagation();
-
-    // Remove previous selection
-    if (selectedElement) {
-      selectedElement = null;
-    }
-
-    selectedElement = target;
-
-    const tag = target.tagName.toLowerCase();
-
-    let elementData: any = {
-      tag,
-      id: target.id || undefined,
-      classes: Array.from(target.classList),
-    };
-
-    // Images often have no textContent; send src/alt so the sidepanel can caption them.
-    if (target instanceof HTMLImageElement) {
-      const img = target as HTMLImageElement;
-      const rawSrc = img.currentSrc || img.src || '';
-
-      let src: string | undefined;
-      try {
-        src = rawSrc ? new URL(rawSrc, document.baseURI).toString() : undefined;
-      } catch {
-        src = rawSrc || undefined;
+  document.addEventListener(
+    "click",
+    (event) => {
+      // Only handle clicks when selection mode is ON
+      if (!selectionMode) {
+        return; // Allow normal clicking when selection mode is OFF
       }
 
-      const figcaption = img
-        .closest('figure')
-        ?.querySelector('figcaption')
-        ?.textContent?.trim() || '';
+      const target = event.target as HTMLElement;
 
-      elementData = {
-        ...elementData,
-        tag: 'img',
-        text: (img.alt || figcaption || '').trim(),
-        src,
-        alt: img.alt || undefined,
-        title: img.title || undefined,
-        figcaption: figcaption || undefined,
+      // Skip if clicking on the extension's own elements
+      if (target.closest("[data-ieee-extension]")) {
+        return;
+      }
+
+      // Skip text nodes and document
+      if (target.nodeType !== Node.ELEMENT_NODE) {
+        return;
+      }
+
+      // Prevent default behavior when selection mode is ON
+      event.preventDefault();
+      event.stopPropagation();
+
+      // Remove previous selection
+      if (selectedElement) {
+        selectedElement = null;
+      }
+
+      selectedElement = target;
+
+      const tag = target.tagName.toLowerCase();
+
+      let elementData: any = {
+        tag,
+        id: target.id || undefined,
+        classes: Array.from(target.classList),
       };
-    } else {
-      const text = target.textContent?.trim() || '';
-      elementData = {
-        ...elementData,
-        text,
-      };
-    }
 
-    // Send to sidepanel to open chat
-    browser.runtime.sendMessage({
-      type: 'ELEMENT_CLICKED',
-      data: elementData,
-      openChat: true, // Flag to switch to chat tab
-    }).catch(() => {
-      // Sidepanel might not be open, that's okay
-    });
+      // Images often have no textContent; send src/alt so the sidepanel can caption them.
+      if (target instanceof HTMLImageElement) {
+        const img = target as HTMLImageElement;
+        const rawSrc = img.currentSrc || img.src || "";
 
-    console.log('[IEEE Extension] Element selected:', elementData);
-  }, true);
+        let src: string | undefined;
+        try {
+          src = rawSrc
+            ? new URL(rawSrc, document.baseURI).toString()
+            : undefined;
+        } catch {
+          src = rawSrc || undefined;
+        }
+
+        const figcaption =
+          img
+            .closest("figure")
+            ?.querySelector("figcaption")
+            ?.textContent?.trim() || "";
+
+        elementData = {
+          ...elementData,
+          tag: "img",
+          text: (img.alt || figcaption || "").trim(),
+          src,
+          alt: img.alt || undefined,
+          title: img.title || undefined,
+          figcaption: figcaption || undefined,
+        };
+      } else {
+        const text = target.textContent?.trim() || "";
+        elementData = {
+          ...elementData,
+          text,
+        };
+      }
+
+      // Send to sidepanel to open chat
+      browser.runtime
+        .sendMessage({
+          type: "ELEMENT_CLICKED",
+          data: elementData,
+          openChat: true, // Flag to switch to chat tab
+        })
+        .catch(() => {
+          // Sidepanel might not be open, that's okay
+        });
+
+      console.log("[IEEE Extension] Element selected:", elementData);
+    },
+    true,
+  );
 
   function addHoverHighlight(element: HTMLElement) {
-    element.style.outline = '3px solid #FEF08A';
-    element.style.backgroundColor = 'rgba(254, 240, 138, 0.2)';
-    element.style.cursor = 'pointer';
+    element.style.outline = "3px solid #FEF08A";
+    element.style.backgroundColor = "rgba(254, 240, 138, 0.2)";
+    element.style.cursor = "pointer";
   }
 
   function removeHoverHighlight(element: HTMLElement) {
-    element.style.outline = '';
-    element.style.backgroundColor = '';
-    element.style.cursor = '';
+    element.style.outline = "";
+    element.style.backgroundColor = "";
+    element.style.cursor = "";
   }
 }
 
@@ -470,9 +493,9 @@ function initMagnifyingGlass() {
   let snapshotWidth = 0;
   let snapshotHeight = 0;
 
-  const magnifyingLens = document.createElement('div');
-  magnifyingLens.id = 'ieee-magnifying-lens';
-  magnifyingLens.setAttribute('data-ieee-extension', 'true');
+  const magnifyingLens = document.createElement("div");
+  magnifyingLens.id = "ieee-magnifying-lens";
+  magnifyingLens.setAttribute("data-ieee-extension", "true");
   magnifyingLens.style.cssText = `
     position: fixed;
     top: 0;
@@ -490,15 +513,15 @@ function initMagnifyingGlass() {
     will-change: transform;
   `;
 
-  const magnifierCanvas = document.createElement('canvas');
-  magnifierCanvas.setAttribute('data-ieee-extension', 'true');
+  const magnifierCanvas = document.createElement("canvas");
+  magnifierCanvas.setAttribute("data-ieee-extension", "true");
   magnifierCanvas.style.cssText = `
     position: absolute;
     inset: 0;
     width: 100%;
     height: 100%;
   `;
-  const magnifierCtx = magnifierCanvas.getContext('2d');
+  const magnifierCtx = magnifierCanvas.getContext("2d");
   magnifyingLens.appendChild(magnifierCanvas);
 
   const attachLens = () => {
@@ -510,44 +533,58 @@ function initMagnifyingGlass() {
     return true;
   };
   if (!attachLens()) {
-    document.addEventListener('DOMContentLoaded', () => {
-      attachLens();
-    }, { once: true });
+    document.addEventListener(
+      "DOMContentLoaded",
+      () => {
+        attachLens();
+      },
+      { once: true },
+    );
   }
 
   const applyCursor = (enabled: boolean) => {
     if (!document.body) return;
     document.body.style.cursor = enabled
       ? 'url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2732%22 height=%2732%22 viewBox=%220 0 32 32%22%3E%3Ccircle cx=%2716%22 cy=%2716%22 r=%2714%22 fill=%22none%22 stroke=%22%233B82F6%22 stroke-width=%222%22/%3E%3Cline x1=%2722%22 y1=%2722%22 x2=%2728%22 y2=%2728%22 stroke=%22%233B82F6%22 stroke-width=%222%22/%3E%3C/svg%3E") 16 16, auto'
-      : 'auto';
+      : "auto";
   };
 
   const loadMagnifyingPreference = async () => {
     try {
-      const preferences = await storage.getItem<UserPreferences>('sync:userPreferences');
+      const preferences = await storage.getItem<UserPreferences>(
+        "sync:userPreferences",
+      );
       if (preferences?.magnifyingZoomLevel) {
         zoomLevel = preferences.magnifyingZoomLevel;
       }
 
-      storage.watch<UserPreferences>('sync:userPreferences', (newPreferences) => {
-        if (newPreferences?.magnifyingZoomLevel) {
-          zoomLevel = newPreferences.magnifyingZoomLevel;
-        }
-      });
+      storage.watch<UserPreferences>(
+        "sync:userPreferences",
+        (newPreferences) => {
+          if (newPreferences?.magnifyingZoomLevel) {
+            zoomLevel = newPreferences.magnifyingZoomLevel;
+          }
+        },
+      );
     } catch (error) {
-      console.error('[IEEE Extension] Failed to load magnifying preferences:', error);
+      console.error(
+        "[IEEE Extension] Failed to load magnifying preferences:",
+        error,
+      );
     }
   };
 
   loadMagnifyingPreference();
 
   const notifyMagnifyingMode = (enabled: boolean) => {
-    browser.runtime.sendMessage({
-      type: 'MAGNIFYING_MODE_CHANGED',
-      enabled,
-    }).catch(() => {
-      // Sidepanel might not be open
-    });
+    browser.runtime
+      .sendMessage({
+        type: "MAGNIFYING_MODE_CHANGED",
+        enabled,
+      })
+      .catch(() => {
+        // Sidepanel might not be open
+      });
   };
 
   const requestSnapshotCapture = async (force = false) => {
@@ -563,12 +600,14 @@ function initMagnifyingGlass() {
     // it will be captured into the snapshot and then re-magnified, creating the
     // appearance that zoom keeps increasing. Hide the lens just for the capture.
     const prevVisibility = magnifyingLens.style.visibility;
-    const shouldHideLens = magnifyingLens.style.display !== 'none';
+    const shouldHideLens = magnifyingLens.style.display !== "none";
     if (shouldHideLens) {
-      magnifyingLens.style.visibility = 'hidden';
+      magnifyingLens.style.visibility = "hidden";
     }
     try {
-      const response = await browser.runtime.sendMessage({ type: 'CAPTURE_VISIBLE_TAB' });
+      const response = await browser.runtime.sendMessage({
+        type: "CAPTURE_VISIBLE_TAB",
+      });
       if (response?.ok && response.dataUrl) {
         const img = new Image();
         img.onload = () => {
@@ -581,7 +620,7 @@ function initMagnifyingGlass() {
         img.src = response.dataUrl;
       }
     } catch (error) {
-      console.warn('[IEEE Extension] Snapshot capture failed:', error);
+      console.warn("[IEEE Extension] Snapshot capture failed:", error);
     } finally {
       if (shouldHideLens) {
         magnifyingLens.style.visibility = prevVisibility;
@@ -603,13 +642,16 @@ function initMagnifyingGlass() {
 
   const renderMagnifier = () => {
     if (!magnifyingMode || !magnifierCtx) return;
-    magnifyingLens.style.display = 'block';
+    magnifyingLens.style.display = "block";
     magnifyingLens.style.transform = `translate(${lastX + 15}px, ${lastY + 15}px)`;
 
     const dpr = window.devicePixelRatio || 1;
     const targetWidth = Math.round(lensSize * dpr);
     const targetHeight = Math.round(lensSize * dpr);
-    if (magnifierCanvas.width !== targetWidth || magnifierCanvas.height !== targetHeight) {
+    if (
+      magnifierCanvas.width !== targetWidth ||
+      magnifierCanvas.height !== targetHeight
+    ) {
       magnifierCanvas.width = targetWidth;
       magnifierCanvas.height = targetHeight;
     }
@@ -619,12 +661,12 @@ function initMagnifyingGlass() {
     magnifierCtx.clearRect(0, 0, lensSize, lensSize);
 
     if (!snapshotReady || !snapshotImage) {
-      magnifierCtx.fillStyle = '#FFFFFF';
+      magnifierCtx.fillStyle = "#FFFFFF";
       magnifierCtx.fillRect(0, 0, lensSize, lensSize);
-      magnifierCtx.fillStyle = '#64748B';
-      magnifierCtx.font = '12px system-ui, sans-serif';
-      magnifierCtx.textAlign = 'center';
-      magnifierCtx.fillText('Loading...', lensSize / 2, lensSize / 2);
+      magnifierCtx.fillStyle = "#64748B";
+      magnifierCtx.font = "12px system-ui, sans-serif";
+      magnifierCtx.textAlign = "center";
+      magnifierCtx.fillText("Loading...", lensSize / 2, lensSize / 2);
       return;
     }
 
@@ -651,11 +693,11 @@ function initMagnifyingGlass() {
       0,
       0,
       lensSize,
-      lensSize
+      lensSize,
     );
   };
 
-  document.addEventListener('mousemove', (event) => {
+  document.addEventListener("mousemove", (event) => {
     lastX = event.clientX;
     lastY = event.clientY;
     if (magnifyingMode) {
@@ -668,29 +710,33 @@ function initMagnifyingGlass() {
     }
   });
 
-  document.addEventListener('mouseleave', () => {
+  document.addEventListener("mouseleave", () => {
     if (!magnifyingMode) return;
-    magnifyingLens.style.display = 'none';
+    magnifyingLens.style.display = "none";
   });
 
-  document.addEventListener('mouseenter', () => {
+  document.addEventListener("mouseenter", () => {
     if (!magnifyingMode) return;
-    magnifyingLens.style.display = 'block';
+    magnifyingLens.style.display = "block";
     scheduleRender();
   });
 
-  window.addEventListener('scroll', () => {
-    if (!magnifyingMode) return;
-    requestSnapshotCapture(true);
-  }, { passive: true });
+  window.addEventListener(
+    "scroll",
+    () => {
+      if (!magnifyingMode) return;
+      requestSnapshotCapture(true);
+    },
+    { passive: true },
+  );
 
-  window.addEventListener('resize', () => {
+  window.addEventListener("resize", () => {
     if (!magnifyingMode) return;
     requestSnapshotCapture(true);
   });
 
   browser.runtime.onMessage.addListener((message) => {
-    if (message.type !== 'TOGGLE_MAGNIFYING_MODE') {
+    if (message.type !== "TOGGLE_MAGNIFYING_MODE") {
       return;
     }
 
@@ -701,12 +747,12 @@ function initMagnifyingGlass() {
         lastY = Math.round(window.innerHeight / 2);
       }
       snapshotReady = false;
-      magnifyingLens.style.display = 'block';
+      magnifyingLens.style.display = "block";
       applyCursor(true);
       requestSnapshotCapture(true);
       scheduleRender();
     } else {
-      magnifyingLens.style.display = 'none';
+      magnifyingLens.style.display = "none";
       applyCursor(false);
     }
 
@@ -719,25 +765,27 @@ function initMagnifyingGlass() {
  */
 function initMessageListener() {
   browser.runtime.onMessage.addListener((message) => {
-    if (message.type === 'GET_PAGE_CONTENT') {
+    if (message.type === "GET_PAGE_CONTENT") {
       handleGetPageContent();
-    } else if (message.type === 'SCROLL_TO_HEADING') {
+    } else if (message.type === "SCROLL_TO_HEADING") {
       handleScrollToHeading(message.index);
-    } else if (message.type === 'APPLY_USER_PREFERENCES') {
+    } else if (message.type === "APPLY_USER_PREFERENCES") {
       if (message.preferences) {
         applyAccessibilityStyles(message.preferences);
       } else {
         removeAccessibilityStyles();
       }
-    } else if (message.type === 'SET_PAGE_LANGUAGE_MODE') {
-      const mode: PageLanguageMode = message.mode === 'original' ? 'original' : 'preferred';
-      const lang: LanguageCode = message.language === 'zh'
-        ? 'zh'
-        : message.language === 'ms'
-          ? 'ms'
-          : message.language === 'ta'
-            ? 'ta'
-            : 'en';
+    } else if (message.type === "SET_PAGE_LANGUAGE_MODE") {
+      const mode: PageLanguageMode =
+        message.mode === "original" ? "original" : "preferred";
+      const lang: LanguageCode =
+        message.language === "zh"
+          ? "zh"
+          : message.language === "ms"
+            ? "ms"
+            : message.language === "ta"
+              ? "ta"
+              : "en";
       currentPageLanguageMode = mode;
       preferredPageLanguage = lang;
       applyPageLanguageMode(currentPageLanguageMode, preferredPageLanguage);
@@ -755,55 +803,59 @@ function handleGetPageContent() {
 
   // Use tocbot to find headings intelligently
   // Create a temporary container for tocbot
-  const tempTocContainer = document.createElement('div');
-  tempTocContainer.id = 'ieee-temp-toc';
-  tempTocContainer.style.display = 'none';
+  const tempTocContainer = document.createElement("div");
+  tempTocContainer.id = "ieee-temp-toc";
+  tempTocContainer.style.display = "none";
   document.body.appendChild(tempTocContainer);
 
   // Initialize tocbot to analyze the page
   tocbot.init({
-    tocSelector: '#ieee-temp-toc',
-    contentSelector: 'body',
-    headingSelector: 'h1, h2, h3, h4, h5, h6',
+    tocSelector: "#ieee-temp-toc",
+    contentSelector: "body",
+    headingSelector: "h1, h2, h3, h4, h5, h6",
     hasInnerContainers: true,
     collapseDepth: 6,
   });
 
   // Extract headings from the generated TOC
-  const tocLinks = tempTocContainer.querySelectorAll('a');
-  const headings = Array.from(tocLinks).map((link, index) => {
-    const href = link.getAttribute('href');
-    if (!href) return null;
+  const tocLinks = tempTocContainer.querySelectorAll("a");
+  const headings = Array.from(tocLinks)
+    .map((link, index) => {
+      const href = link.getAttribute("href");
+      if (!href) return null;
 
-    // Find the actual heading element
-    const headingId = href.substring(1); // Remove the '#'
-    const headingElement = document.getElementById(headingId);
+      // Find the actual heading element
+      const headingId = href.substring(1); // Remove the '#'
+      const headingElement = document.getElementById(headingId);
 
-    if (!headingElement) return null;
+      if (!headingElement) return null;
 
-    const text = headingElement.textContent?.trim();
-    if (!text) return null;
+      const text = headingElement.textContent?.trim();
+      if (!text) return null;
 
-    // Get the heading level
-    const tagName = headingElement.tagName;
-    const level = tagName.match(/^H[1-6]$/) ? parseInt(tagName.substring(1)) : 2;
+      // Get the heading level
+      const tagName = headingElement.tagName;
+      const level = tagName.match(/^H[1-6]$/)
+        ? parseInt(tagName.substring(1))
+        : 2;
 
-    // Store index as data attribute for later scrolling
-    headingElement.setAttribute('data-ieee-heading-index', index.toString());
+      // Store index as data attribute for later scrolling
+      headingElement.setAttribute("data-ieee-heading-index", index.toString());
 
-    return {
-      text,
-      level,
-      index,
-      id: headingId,
-    };
-  }).filter(Boolean);
+      return {
+        text,
+        level,
+        index,
+        id: headingId,
+      };
+    })
+    .filter(Boolean);
 
   // Clean up
   tocbot.destroy();
   tempTocContainer.remove();
 
-  const paragraphs = Array.from(document.querySelectorAll('p'))
+  const paragraphs = Array.from(document.querySelectorAll("p"))
     .map((p) => p.textContent?.trim())
     .filter((text) => text && text.length > 50)
     .slice(0, 18);
@@ -819,15 +871,17 @@ function handleGetPageContent() {
   };
 
   // Send back to sidepanel
-  browser.runtime.sendMessage({
-    type: 'PAGE_LOADED',
-    data: pageData,
-  }).catch(() => {
-    // Sidepanel might not be open yet
-  });
+  browser.runtime
+    .sendMessage({
+      type: "PAGE_LOADED",
+      data: pageData,
+    })
+    .catch(() => {
+      // Sidepanel might not be open yet
+    });
 
-  console.log('[IEEE Extension] Page content extracted:', pageData);
-  console.log('[IEEE Extension] Found headings:', headings.length);
+  console.log("[IEEE Extension] Page content extracted:", pageData);
+  console.log("[IEEE Extension] Found headings:", headings.length);
 }
 
 function extractInteractiveSummary(): string[] {
@@ -839,75 +893,80 @@ function extractInteractiveSummary(): string[] {
     const rect = element.getBoundingClientRect();
     if (rect.width < 2 || rect.height < 2) return false;
     const style = window.getComputedStyle(element);
-    if (style.display === 'none' || style.visibility === 'hidden') return false;
-    if (style.opacity === '0') return false;
+    if (style.display === "none" || style.visibility === "hidden") return false;
+    if (style.opacity === "0") return false;
     return true;
   };
 
-  const clean = (s: string) => s.replace(/\s+/g, ' ').trim();
+  const clean = (s: string) => s.replace(/\s+/g, " ").trim();
 
   const ariaLabelledByText = (el: HTMLElement): string => {
-    const ids = (el.getAttribute('aria-labelledby') || '')
+    const ids = (el.getAttribute("aria-labelledby") || "")
       .split(/\s+/g)
       .map((x) => x.trim())
       .filter(Boolean);
     const parts: string[] = [];
     for (const id of ids) {
       const ref = document.getElementById(id);
-      const txt = clean(ref?.textContent || '');
+      const txt = clean(ref?.textContent || "");
       if (txt) parts.push(txt);
     }
-    return parts.join(' ');
+    return parts.join(" ");
   };
 
   const labelForInput = (input: HTMLElement): string => {
-    const id = input.getAttribute('id');
+    const id = input.getAttribute("id");
     if (id) {
       const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
-      const txt = clean(label?.textContent || '');
+      const txt = clean(label?.textContent || "");
       if (txt) return txt;
     }
 
-    const wrappedLabel = input.closest('label');
-    const wrappedTxt = clean(wrappedLabel?.textContent || '');
+    const wrappedLabel = input.closest("label");
+    const wrappedTxt = clean(wrappedLabel?.textContent || "");
     if (wrappedTxt) return wrappedTxt;
 
-    return '';
+    return "";
   };
 
   const accessibleName = (el: HTMLElement): string => {
-    const aria = clean(el.getAttribute('aria-label') || '');
+    const aria = clean(el.getAttribute("aria-label") || "");
     if (aria) return aria;
     const labelledBy = ariaLabelledByText(el);
     if (labelledBy) return labelledBy;
 
-    const title = clean(el.getAttribute('title') || '');
+    const title = clean(el.getAttribute("title") || "");
     if (title) return title;
 
-    const text = clean(el.textContent || '');
+    const text = clean(el.textContent || "");
     if (text) return text;
 
-    const placeholder = clean(el.getAttribute('placeholder') || '');
+    const placeholder = clean(el.getAttribute("placeholder") || "");
     if (placeholder) return placeholder;
 
-    const name = clean(el.getAttribute('name') || '');
+    const name = clean(el.getAttribute("name") || "");
     if (name) return name;
 
-    const id = clean(el.getAttribute('id') || '');
+    const id = clean(el.getAttribute("id") || "");
     if (id) return id;
 
-    return '';
+    return "";
   };
 
   const describe = (el: HTMLElement): string | null => {
-    if (el.closest('[data-ieee-extension]')) return null;
+    if (el.closest("[data-ieee-extension]")) return null;
     if (!isVisible(el)) return null;
 
     const tag = el.tagName.toLowerCase();
 
-    if (tag === 'a') {
-      const href = (el as HTMLAnchorElement).href || '';
-      if (!href || href.startsWith('javascript:') || href.startsWith('mailto:') || href.startsWith('tel:')) {
+    if (tag === "a") {
+      const href = (el as HTMLAnchorElement).href || "";
+      if (
+        !href ||
+        href.startsWith("javascript:") ||
+        href.startsWith("mailto:") ||
+        href.startsWith("tel:")
+      ) {
         return null;
       }
       const name = accessibleName(el).slice(0, 80);
@@ -915,26 +974,26 @@ function extractInteractiveSummary(): string[] {
       return `LINK: "${name}" href="${href}"`;
     }
 
-    if (tag === 'button') {
+    if (tag === "button") {
       const name = accessibleName(el).slice(0, 80);
       if (!name) return null;
       return `BUTTON: "${name}"`;
     }
 
-    if (tag === 'input') {
+    if (tag === "input") {
       const input = el as HTMLInputElement;
-      const type = (input.type || 'text').toLowerCase();
-      if (type === 'hidden') return null;
+      const type = (input.type || "text").toLowerCase();
+      if (type === "hidden") return null;
 
       // Treat submit/button as buttons
-      if (type === 'submit' || type === 'button' || type === 'reset') {
+      if (type === "submit" || type === "button" || type === "reset") {
         const name = accessibleName(el).slice(0, 80);
         if (!name) return null;
         return `BUTTON: "${name}"`;
       }
 
       const label = clean(labelForInput(el));
-      const placeholder = clean(input.placeholder || '');
+      const placeholder = clean(input.placeholder || "");
       const name = label || placeholder || accessibleName(el);
       if (!name) return null;
 
@@ -942,38 +1001,43 @@ function extractInteractiveSummary(): string[] {
       if (label) extra.push(`label="${label.slice(0, 80)}"`);
       if (placeholder) extra.push(`placeholder="${placeholder.slice(0, 80)}"`);
 
-      const kind = type === 'checkbox' ? 'CHECKBOX' : type === 'radio' ? 'RADIO' : `INPUT(${type})`;
-      return `${kind}: "${name.slice(0, 80)}"${extra.length ? ' ' + extra.join(' ') : ''}`;
+      const kind =
+        type === "checkbox"
+          ? "CHECKBOX"
+          : type === "radio"
+            ? "RADIO"
+            : `INPUT(${type})`;
+      return `${kind}: "${name.slice(0, 80)}"${extra.length ? " " + extra.join(" ") : ""}`;
     }
 
-    if (tag === 'select') {
+    if (tag === "select") {
       const select = el as HTMLSelectElement;
       const label = clean(labelForInput(el));
       const name = label || accessibleName(el);
       const options = Array.from(select.options)
-        .map((o) => clean(o.textContent || ''))
+        .map((o) => clean(o.textContent || ""))
         .filter(Boolean)
         .slice(0, 6);
 
       if (!name) return null;
-      const extra = options.length ? ` options=${JSON.stringify(options)}` : '';
+      const extra = options.length ? ` options=${JSON.stringify(options)}` : "";
       return `SELECT: "${name.slice(0, 80)}"${extra}`;
     }
 
-    if (tag === 'textarea') {
+    if (tag === "textarea") {
       const label = clean(labelForInput(el));
-      const placeholder = clean(el.getAttribute('placeholder') || '');
+      const placeholder = clean(el.getAttribute("placeholder") || "");
       const name = label || placeholder || accessibleName(el);
       if (!name) return null;
       const extra: string[] = [];
       if (label) extra.push(`label="${label.slice(0, 80)}"`);
       if (placeholder) extra.push(`placeholder="${placeholder.slice(0, 80)}"`);
-      return `TEXTAREA: "${name.slice(0, 80)}"${extra.length ? ' ' + extra.join(' ') : ''}`;
+      return `TEXTAREA: "${name.slice(0, 80)}"${extra.length ? " " + extra.join(" ") : ""}`;
     }
 
     // Fallback for ARIA-based buttons/links (rarely needed)
-    const role = (el.getAttribute('role') || '').toLowerCase();
-    if (role === 'button' || role === 'link') {
+    const role = (el.getAttribute("role") || "").toLowerCase();
+    if (role === "button" || role === "link") {
       const name = accessibleName(el).slice(0, 80);
       if (!name) return null;
       return `${role.toUpperCase()}: "${name}"`;
@@ -983,7 +1047,9 @@ function extractInteractiveSummary(): string[] {
   };
 
   const candidates = Array.from(
-    document.querySelectorAll('button, a[href], input, select, textarea, [role="button"], [role="link"]')
+    document.querySelectorAll(
+      'button, a[href], input, select, textarea, [role="button"], [role="link"]',
+    ),
   ) as HTMLElement[];
 
   const described = candidates
@@ -992,7 +1058,7 @@ function extractInteractiveSummary(): string[] {
       return { top: rect.top, left: rect.left, desc: describe(el) };
     })
     .filter((x) => Boolean(x.desc))
-    .sort((a, b) => (a.top - b.top) || (a.left - b.left));
+    .sort((a, b) => a.top - b.top || a.left - b.left);
 
   const out: string[] = [];
   for (const item of described) {
@@ -1010,18 +1076,20 @@ function extractInteractiveSummary(): string[] {
  * Handle SCROLL_TO_HEADING message - scroll to a specific heading
  */
 function handleScrollToHeading(index: number) {
-  const heading = document.querySelector(`[data-ieee-heading-index="${index}"]`);
+  const heading = document.querySelector(
+    `[data-ieee-heading-index="${index}"]`,
+  );
 
   if (heading) {
     // Scroll to the heading with smooth behavior
     heading.scrollIntoView({
-      behavior: 'smooth',
-      block: 'start',
+      behavior: "smooth",
+      block: "start",
     });
 
-    console.log('[IEEE Extension] Scrolled to heading:', heading.textContent);
+    console.log("[IEEE Extension] Scrolled to heading:", heading.textContent);
   } else {
-    console.warn('[IEEE Extension] Heading not found at index:', index);
+    console.warn("[IEEE Extension] Heading not found at index:", index);
   }
 }
 
@@ -1042,52 +1110,71 @@ function notifyPageLoaded() {
 async function initAccessibilityFeatures() {
   try {
     // Load user preferences from storage
-    const preferences = await storage.getItem<UserPreferences>('sync:userPreferences');
+    const preferences = await storage.getItem<UserPreferences>(
+      "sync:userPreferences",
+    );
 
     if (preferences) {
-      console.log('[IEEE Extension] Applying accessibility preferences:', preferences);
+      console.log(
+        "[IEEE Extension] Applying accessibility preferences:",
+        preferences,
+      );
       applyAccessibilityStyles(preferences);
-      preferredPageLanguage = preferences.language ?? DEFAULT_USER_PREFERENCES.language;
-      if (currentPageLanguageMode === 'preferred') {
-        await applyPageLanguageMode(currentPageLanguageMode, preferredPageLanguage);
+      preferredPageLanguage =
+        preferences.language ?? DEFAULT_USER_PREFERENCES.language;
+      if (currentPageLanguageMode === "preferred") {
+        await applyPageLanguageMode(
+          currentPageLanguageMode,
+          preferredPageLanguage,
+        );
         schedulePreferredLanguageRefresh(1500);
       }
     } else {
-      console.log('[IEEE Extension] No preferences found, using defaults');
+      console.log("[IEEE Extension] No preferences found, using defaults");
       removeAccessibilityStyles();
       preferredPageLanguage = DEFAULT_USER_PREFERENCES.language;
-      if (currentPageLanguageMode === 'preferred') {
-        await applyPageLanguageMode(currentPageLanguageMode, preferredPageLanguage);
+      if (currentPageLanguageMode === "preferred") {
+        await applyPageLanguageMode(
+          currentPageLanguageMode,
+          preferredPageLanguage,
+        );
         schedulePreferredLanguageRefresh(1500);
       }
     }
 
     // Watch for preference changes (even if preferences aren't set yet).
-    storage.watch<UserPreferences>('sync:userPreferences', (newPreferences) => {
+    storage.watch<UserPreferences>("sync:userPreferences", (newPreferences) => {
       if (newPreferences) {
-        console.log('[IEEE Extension] Preferences updated:', newPreferences);
+        console.log("[IEEE Extension] Preferences updated:", newPreferences);
         applyAccessibilityStyles(newPreferences);
-        preferredPageLanguage = newPreferences.language ?? DEFAULT_USER_PREFERENCES.language;
-        if (currentPageLanguageMode === 'preferred') {
-          void applyPageLanguageMode(currentPageLanguageMode, preferredPageLanguage);
+        preferredPageLanguage =
+          newPreferences.language ?? DEFAULT_USER_PREFERENCES.language;
+        if (currentPageLanguageMode === "preferred") {
+          void applyPageLanguageMode(
+            currentPageLanguageMode,
+            preferredPageLanguage,
+          );
           schedulePreferredLanguageRefresh(800);
         }
       } else {
         removeAccessibilityStyles();
         preferredPageLanguage = DEFAULT_USER_PREFERENCES.language;
-        if (currentPageLanguageMode === 'preferred') {
-          void applyPageLanguageMode(currentPageLanguageMode, preferredPageLanguage);
+        if (currentPageLanguageMode === "preferred") {
+          void applyPageLanguageMode(
+            currentPageLanguageMode,
+            preferredPageLanguage,
+          );
           schedulePreferredLanguageRefresh(800);
         }
       }
     });
   } catch (error) {
-    console.error('[IEEE Extension] Failed to load preferences:', error);
+    console.error("[IEEE Extension] Failed to load preferences:", error);
   }
 }
 
 function removeAccessibilityStyles() {
-  const existingStyle = document.getElementById('ieee-accessibility-styles');
+  const existingStyle = document.getElementById("ieee-accessibility-styles");
   if (existingStyle) {
     existingStyle.remove();
   }
@@ -1097,21 +1184,24 @@ function removeAccessibilityStyles() {
  * Apply accessibility styles based on user preferences
  */
 function applyAccessibilityStyles(preferences: UserPreferences) {
-  const effectivePreferences: UserPreferences = { ...DEFAULT_USER_PREFERENCES, ...preferences };
+  const effectivePreferences: UserPreferences = {
+    ...DEFAULT_USER_PREFERENCES,
+    ...preferences,
+  };
   // Remove existing style element if it exists
-  const existingStyle = document.getElementById('ieee-accessibility-styles');
+  const existingStyle = document.getElementById("ieee-accessibility-styles");
   if (existingStyle) {
     existingStyle.remove();
   }
 
   // Create new style element
-  const styleElement = document.createElement('style');
-  styleElement.id = 'ieee-accessibility-styles';
+  const styleElement = document.createElement("style");
+  styleElement.id = "ieee-accessibility-styles";
 
-  let css = '';
+  let css = "";
 
   // Zoom rate adjustments
-  if (effectivePreferences.fontSize === 'large') {
+  if (effectivePreferences.fontSize === "large") {
     css += `
       body {
         zoom: 1.25 !important;
@@ -1121,7 +1211,7 @@ function applyAccessibilityStyles(preferences: UserPreferences) {
         zoom: ${1 / 1.25} !important;
       }
     `;
-  } else if (effectivePreferences.fontSize === 'extra-large') {
+  } else if (effectivePreferences.fontSize === "extra-large") {
     css += `
       body {
         zoom: 1.5 !important;
@@ -1141,13 +1231,13 @@ function applyAccessibilityStyles(preferences: UserPreferences) {
   }
 
   // Link styling
-  if (effectivePreferences.linkStyle === 'underline') {
+  if (effectivePreferences.linkStyle === "underline") {
     css += `
       a, a:link, a:visited {
         text-decoration: underline !important;
       }
     `;
-  } else if (effectivePreferences.linkStyle === 'highlight') {
+  } else if (effectivePreferences.linkStyle === "highlight") {
     css += `
       a, a:link, a:visited {
         background-color: #FEF08A !important;
@@ -1159,7 +1249,7 @@ function applyAccessibilityStyles(preferences: UserPreferences) {
         text-decoration: none !important;
       }
     `;
-  } else if (effectivePreferences.linkStyle === 'border') {
+  } else if (effectivePreferences.linkStyle === "border") {
     css += `
       a, a:link, a:visited {
         border: 2px solid currentColor !important;
@@ -1171,7 +1261,7 @@ function applyAccessibilityStyles(preferences: UserPreferences) {
   }
 
   // High contrast mode (Yellow on Black)
-  if (effectivePreferences.contrastMode === 'high-contrast-yellow') {
+  if (effectivePreferences.contrastMode === "high-contrast-yellow") {
     css += `
       body, body * {
         background-color: #000000 !important;
@@ -1208,6 +1298,5 @@ function applyAccessibilityStyles(preferences: UserPreferences) {
   styleElement.textContent = css;
   document.head.appendChild(styleElement);
 
-  console.log('[IEEE Extension] Accessibility styles applied');
+  console.log("[IEEE Extension] Accessibility styles applied");
 }
-

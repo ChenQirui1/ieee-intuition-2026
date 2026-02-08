@@ -195,8 +195,7 @@ const UI_STRINGS: Record<LanguageCode, Record<string, string>> = {
     table_of_contents: "Navigation",
     refresh: "Refresh",
     loading_summary: "Loading page summary...",
-    failed_summary:
-      "No summary available for this page.",
+    failed_summary: "No summary available for this page.",
     no_headings: "No headings found on this page.",
     try_refresh: "Try clicking the Refresh button above.",
     no_conversation: "No conversation yet",
@@ -223,10 +222,8 @@ const UI_STRINGS: Record<LanguageCode, Record<string, string>> = {
     stop: "Stop",
     describe_image: "Describe this image.",
     what_does_this_mean: "What does this mean:",
-    image_caption_error:
-      "No description available for this image.",
-    text_error:
-      "No information available. Please try again.",
+    image_caption_error: "No description available for this image.",
+    text_error: "No information available. Please try again.",
   },
   zh: {
     mode_easy_read: "易读",
@@ -282,8 +279,7 @@ const UI_STRINGS: Record<LanguageCode, Record<string, string>> = {
     stop: "停止",
     describe_image: "描述这张图片。",
     what_does_this_mean: "这是什么意思：",
-    image_caption_error:
-      "此图片无可用描述。",
+    image_caption_error: "此图片无可用描述。",
     text_error: "无可用信息。请重试。",
   },
   ms: {
@@ -313,8 +309,7 @@ const UI_STRINGS: Record<LanguageCode, Record<string, string>> = {
     table_of_contents: "Jadual Kandungan",
     refresh: "Muat semula",
     loading_summary: "Memuatkan ringkasan halaman...",
-    failed_summary:
-      "Tiada ringkasan tersedia untuk halaman ini.",
+    failed_summary: "Tiada ringkasan tersedia untuk halaman ini.",
     no_headings: "Tiada tajuk ditemui pada halaman ini.",
     try_refresh: "Cuba tekan butang Muat semula di atas.",
     no_conversation: "Belum ada perbualan",
@@ -341,10 +336,8 @@ const UI_STRINGS: Record<LanguageCode, Record<string, string>> = {
     stop: "Henti",
     describe_image: "Terangkan imej ini.",
     what_does_this_mean: "Apa maksud ini:",
-    image_caption_error:
-      "Tiada penerangan tersedia untuk imej ini.",
-    text_error:
-      "Tiada maklumat tersedia. Sila cuba lagi.",
+    image_caption_error: "Tiada penerangan tersedia untuk imej ini.",
+    text_error: "Tiada maklumat tersedia. Sila cuba lagi.",
   },
   ta: {
     mode_easy_read: "எளிதாக படிக்கலாம்",
@@ -373,8 +366,7 @@ const UI_STRINGS: Record<LanguageCode, Record<string, string>> = {
     table_of_contents: "உள்ளடக்க பட்டியல்",
     refresh: "புதுப்பி",
     loading_summary: "பக்க சுருக்கம் ஏற்றப்படுகிறது...",
-    failed_summary:
-      "இந்த பக்கத்திற்கு சுருக்கம் கிடைக்கவில்லை.",
+    failed_summary: "இந்த பக்கத்திற்கு சுருக்கம் கிடைக்கவில்லை.",
     no_headings: "இந்த பக்கத்தில் தலைப்புகள் இல்லை.",
     try_refresh: "மேலுள்ள புதுப்பி பொத்தானை அழுத்தி பார்க்கவும்.",
     no_conversation: "இன்னும் உரையாடல் இல்லை",
@@ -401,10 +393,8 @@ const UI_STRINGS: Record<LanguageCode, Record<string, string>> = {
     stop: "நிறுத்து",
     describe_image: "இந்த படத்தை விவரிக்கவும்.",
     what_does_this_mean: "இதன் பொருள் என்ன:",
-    image_caption_error:
-      "இந்த படத்திற்கு விளக்கம் கிடைக்கவில்லை.",
-    text_error:
-      "தகவல் கிடைக்கவில்லை. மீண்டும் முயற்சிக்கவும்.",
+    image_caption_error: "இந்த படத்திற்கு விளக்கம் கிடைக்கவில்லை.",
+    text_error: "தகவல் கிடைக்கவில்லை. மீண்டும் முயற்சிக்கவும்.",
   },
 };
 

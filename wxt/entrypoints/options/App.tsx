@@ -1304,49 +1304,67 @@ function SuccessScreen({ preferences }: { preferences: UserPreferences }) {
         </h3>
         <ul className="space-y-2 text-black">
           <li className="flex items-center gap-2">
-            <span className="inline-flex items-center justify-center w-5 h-5 bg-black text-yellow-400 rounded-full text-sm font-bold">✓</span>
+            <span className="inline-flex items-center justify-center w-5 h-5 bg-black text-yellow-400 rounded-full text-sm font-bold">
+              ✓
+            </span>
             {ui.label_font_size}:{" "}
             <strong>{labelFontSize(ui, preferences.fontSize)}</strong>
           </li>
           <li className="flex items-center gap-2">
-            <span className="inline-flex items-center justify-center w-5 h-5 bg-black text-yellow-400 rounded-full text-sm font-bold">✓</span>
+            <span className="inline-flex items-center justify-center w-5 h-5 bg-black text-yellow-400 rounded-full text-sm font-bold">
+              ✓
+            </span>
             {ui.label_link_style}:{" "}
             <strong>{labelLinkStyle(ui, preferences.linkStyle)}</strong>
           </li>
           <li className="flex items-center gap-2">
-            <span className="inline-flex items-center justify-center w-5 h-5 bg-black text-yellow-400 rounded-full text-sm font-bold">✓</span>
+            <span className="inline-flex items-center justify-center w-5 h-5 bg-black text-yellow-400 rounded-full text-sm font-bold">
+              ✓
+            </span>
             {ui.label_contrast}:{" "}
             <strong>{labelContrastMode(ui, preferences.contrastMode)}</strong>
           </li>
           {preferences.hideAds && (
             <li className="flex items-center gap-2">
-              <span className="inline-flex items-center justify-center w-5 h-5 bg-black text-yellow-400 rounded-full text-sm font-bold">✓</span>
+              <span className="inline-flex items-center justify-center w-5 h-5 bg-black text-yellow-400 rounded-full text-sm font-bold">
+                ✓
+              </span>
               {ui.hide_ads_enabled}
             </li>
           )}
           {preferences.simplifyLanguage && (
             <li className="flex items-center gap-2">
-              <span className="inline-flex items-center justify-center w-5 h-5 bg-black text-yellow-400 rounded-full text-sm font-bold">✓</span>
+              <span className="inline-flex items-center justify-center w-5 h-5 bg-black text-yellow-400 rounded-full text-sm font-bold">
+                ✓
+              </span>
               {ui.simplify_language_enabled}
             </li>
           )}
           {preferences.showBreadcrumbs && (
             <li className="flex items-center gap-2">
-              <span className="inline-flex items-center justify-center w-5 h-5 bg-black text-yellow-400 rounded-full text-sm font-bold">✓</span>
+              <span className="inline-flex items-center justify-center w-5 h-5 bg-black text-yellow-400 rounded-full text-sm font-bold">
+                ✓
+              </span>
               {ui.show_breadcrumbs_enabled}
             </li>
           )}
           <li className="flex items-center gap-2">
-            <span className="inline-flex items-center justify-center w-5 h-5 bg-black text-yellow-400 rounded-full text-sm font-bold">✓</span>
+            <span className="inline-flex items-center justify-center w-5 h-5 bg-black text-yellow-400 rounded-full text-sm font-bold">
+              ✓
+            </span>
             {ui.label_language}:{" "}
             <strong>{preferences.language.toUpperCase()}</strong>
           </li>
           <li className="flex items-center gap-2">
-            <span className="inline-flex items-center justify-center w-5 h-5 bg-black text-yellow-400 rounded-full text-sm font-bold">✓</span>
+            <span className="inline-flex items-center justify-center w-5 h-5 bg-black text-yellow-400 rounded-full text-sm font-bold">
+              ✓
+            </span>
             {ui.label_read_aloud_speed}: <strong>{preferences.ttsRate}x</strong>
           </li>
           <li className="flex items-center gap-2">
-            <span className="inline-flex items-center justify-center w-5 h-5 bg-black text-yellow-400 rounded-full text-sm font-bold">✓</span>
+            <span className="inline-flex items-center justify-center w-5 h-5 bg-black text-yellow-400 rounded-full text-sm font-bold">
+              ✓
+            </span>
             {ui.label_auto_read}:{" "}
             <strong>{preferences.autoReadAssistant ? ui.on : ui.off}</strong>
           </li>
