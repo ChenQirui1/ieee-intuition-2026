@@ -3,12 +3,12 @@
  */
 
 // Production
-const API_BASE_URL = 'https://ieee-intuition-2026-production.up.railway.app';
+const API_BASE_URL = "https://ieee-intuition-2026-production.up.railway.app";
 
 //Local development (uncomment for local testing)
 //const API_BASE_URL = 'http://127.0.0.1:8000';
 
-export type LanguageCode = 'en' | 'zh' | 'ms' | 'ta';
+export type LanguageCode = "en" | "zh" | "ms" | "ta";
 
 export interface SimplifyResponse {
   ok: boolean;
@@ -52,7 +52,7 @@ export interface SimplifyResponse {
 }
 
 export interface ChatMessage {
-  role: 'user' | 'assistant' | 'system';
+  role: "user" | "assistant" | "system";
   content: string;
 }
 
@@ -69,17 +69,27 @@ export interface ChatResponse {
  */
 export async function simplifyPage(
   url: string,
-  mode: 'easy_read' | 'checklist' | 'step_by_step' | 'all' | 'intelligent' = 'all',
-  language: LanguageCode = 'en',
+  mode:
+    | "easy_read"
+    | "checklist"
+    | "step_by_step"
+    | "all"
+    | "intelligent" = "all",
+  language: LanguageCode = "en",
   sessionId?: string,
-  forceRegen: boolean = false
+  forceRegen: boolean = false,
 ): Promise<SimplifyResponse> {
-  console.log('[API] Calling /simplify with:', { url, mode, language, sessionId });
+  console.log("[API] Calling /simplify with:", {
+    url,
+    mode,
+    language,
+    sessionId,
+  });
 
   const response = await fetch(`${API_BASE_URL}/simplify`, {
-    method: 'POST',
+    method: "POST",
     headers: {
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
     },
     body: JSON.stringify({
       url,
@@ -90,19 +100,19 @@ export async function simplifyPage(
     }),
   });
 
-  console.log('[API] /simplify response status:', response.status);
+  console.log("[API] /simplify response status:", response.status);
 
   if (!response.ok) {
     const errorText = await response.text();
-    console.error('[API] /simplify error:', errorText);
+    console.error("[API] /simplify error:", errorText);
     throw new Error(`API error: ${response.status} - ${errorText}`);
   }
 
   const data = await response.json();
-  console.log('[API] /simplify success:', {
+  console.log("[API] /simplify success:", {
     page_id: data.page_id,
     language: data.language,
-    has_easy_read: !!data.outputs?.easy_read
+    has_easy_read: !!data.outputs?.easy_read,
   });
 
   return data;
@@ -117,24 +127,24 @@ export async function sendChatMessage(
   history: ChatMessage[] = [],
   options: {
     pageId?: string;
-    mode?: 'easy_read' | 'checklist' | 'step_by_step';
+    mode?: "easy_read" | "checklist" | "step_by_step";
     language?: LanguageCode;
     simplificationId?: string;
     sectionId?: string;
     sectionText?: string;
     sessionId?: string;
-  } = {}
+  } = {},
 ): Promise<ChatResponse> {
   const response = await fetch(`${API_BASE_URL}/chat`, {
-    method: 'POST',
+    method: "POST",
     headers: {
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
     },
     body: JSON.stringify({
       url: url || undefined,
       page_id: options.pageId,
-      mode: options.mode || 'easy_read',
-      language: options.language || 'en',
+      mode: options.mode || "easy_read",
+      language: options.language || "en",
       simplification_id: options.simplificationId,
       section_id: options.sectionId,
       section_text: options.sectionText,
@@ -157,41 +167,44 @@ export async function sendChatMessage(
  */
 export async function sendTextCompletion(
   text: string,
-  options: { temperature?: number; language?: LanguageCode } = {}
+  options: { temperature?: number; language?: LanguageCode } = {},
 ): Promise<{ ok: boolean; model: string; response: string }> {
   const temperature = options.temperature ?? 0.7;
   const language = options.language;
 
-  console.log('[API] Calling /text-completion with text:', text.substring(0, 100));
+  console.log(
+    "[API] Calling /text-completion with text:",
+    text.substring(0, 100),
+  );
 
   const languageSystemPrompt = (() => {
     if (!language) return null;
-    if (language === 'en') {
-      return 'Reply in English.';
+    if (language === "en") {
+      return "Reply in English.";
     }
-    if (language === 'zh') {
-      return 'Reply in Simplified Chinese only. Do not reply in English.';
+    if (language === "zh") {
+      return "Reply in Simplified Chinese only. Do not reply in English.";
     }
-    if (language === 'ms') {
-      return 'Reply in Malay (Bahasa Melayu) only. Do not reply in English.';
+    if (language === "ms") {
+      return "Reply in Malay (Bahasa Melayu) only. Do not reply in English.";
     }
-    if (language === 'ta') {
-      return 'Reply in Tamil only. Do not reply in English.';
+    if (language === "ta") {
+      return "Reply in Tamil only. Do not reply in English.";
     }
     return null;
   })();
 
   const response = await fetch(`${API_BASE_URL}/text-completion`, {
-    method: 'POST',
+    method: "POST",
     headers: {
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
     },
     body: JSON.stringify({
       ...(languageSystemPrompt
         ? {
             messages: [
-              { role: 'system', content: languageSystemPrompt },
-              { role: 'user', content: text },
+              { role: "system", content: languageSystemPrompt },
+              { role: "user", content: text },
             ],
           }
         : { text }),
@@ -199,16 +212,16 @@ export async function sendTextCompletion(
     }),
   });
 
-  console.log('[API] /text-completion response status:', response.status);
+  console.log("[API] /text-completion response status:", response.status);
 
   if (!response.ok) {
     const errorText = await response.text();
-    console.error('[API] /text-completion error:', errorText);
+    console.error("[API] /text-completion error:", errorText);
     throw new Error(`API error: ${response.status} - ${errorText}`);
   }
 
   const data = await response.json();
-  console.log('[API] /text-completion success');
+  console.log("[API] /text-completion success");
 
   return data;
 }
@@ -221,17 +234,17 @@ export async function sendImageCaption(
   options: {
     altText?: string;
     language?: LanguageCode;
-  } = {}
+  } = {},
 ): Promise<{ ok: boolean; model: string; caption: string }> {
   const response = await fetch(`${API_BASE_URL}/image-caption`, {
-    method: 'POST',
+    method: "POST",
     headers: {
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
     },
     body: JSON.stringify({
       image_url: imageUrl,
       alt_text: options.altText,
-      language: options.language || 'en',
+      language: options.language || "en",
     }),
   });
 
@@ -248,12 +261,12 @@ export async function sendImageCaption(
  */
 export async function testConnection(): Promise<boolean> {
   try {
-    const response = await fetch(`${API_BASE_URL}/openai-test`, {
-      method: 'GET',
+    const response = await fetch(`${API_BASE_URL}/`, {
+      method: "GET",
     });
     return response.ok;
   } catch (error) {
-    console.error('Backend connection test failed:', error);
+    console.error("Backend connection test failed:", error);
     return false;
   }
 }

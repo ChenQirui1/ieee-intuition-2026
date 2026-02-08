@@ -604,7 +604,7 @@ function initMagnifyingGlass() {
   const renderMagnifier = () => {
     if (!magnifyingMode || !magnifierCtx) return;
     magnifyingLens.style.display = 'block';
-    magnifyingLens.style.transform = `translate(${lastX - lensSize / 2}px, ${lastY - lensSize / 2}px)`;
+    magnifyingLens.style.transform = `translate(${lastX + 15}px, ${lastY + 15}px)`;
 
     const dpr = window.devicePixelRatio || 1;
     const targetWidth = Math.round(lensSize * dpr);
@@ -1116,11 +1116,26 @@ function applyAccessibilityStyles(preferences: UserPreferences) {
       body {
         zoom: 1.25 !important;
       }
+      /* Counter-zoom for magnifying glass to keep it unaffected */
+      #ieee-magnifying-lens {
+        zoom: ${1 / 1.25} !important;
+      }
     `;
   } else if (effectivePreferences.fontSize === 'extra-large') {
     css += `
       body {
         zoom: 1.5 !important;
+      }
+      /* Counter-zoom for magnifying glass to keep it unaffected */
+      #ieee-magnifying-lens {
+        zoom: ${1 / 1.5} !important;
+      }
+    `;
+  } else {
+    // Reset magnifying glass zoom when at standard size
+    css += `
+      #ieee-magnifying-lens {
+        zoom: 1 !important;
       }
     `;
   }
