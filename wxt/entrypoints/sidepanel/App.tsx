@@ -2085,18 +2085,6 @@ function App() {
   useEffect(() => {
     const handleMessage = (message: any, sender: any, sendResponse: any) => {
       console.log("[Sidepanel] Received message:", message);
-      if (message.type === "CAPTURE_VISIBLE_TAB") {
-        const windowId =
-          sender?.tab?.windowId ?? browser.windows.WINDOW_ID_CURRENT;
-        browser.tabs
-          .captureVisibleTab(windowId, { format: "png" })
-          .then((dataUrl) => sendResponse({ ok: true, dataUrl }))
-          .catch((error) => {
-            console.error("[Sidepanel] captureVisibleTab failed:", error);
-            sendResponse({ ok: false });
-          });
-        return true;
-      }
       if (message.type === "ELEMENT_CLICKED") {
         if (message.openChat) {
           setActiveTab("chat");

@@ -143,7 +143,10 @@ export default defineBackground(() => {
         .then((dataUrl) => sendResponse({ ok: true, dataUrl }))
         .catch((error) => {
           console.warn('[IEEE Extension] captureVisibleTab failed:', error);
-          sendResponse({ ok: false });
+          sendResponse({
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
         });
       return true;
     }

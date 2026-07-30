@@ -8,7 +8,13 @@ export default defineConfig({
     name: "ClearWeb",
     description: "Make the web easier to read and understand with AI-powered summaries and chat",
     permissions: ["storage", "tabs", "activeTab"],
-    host_permissions: ["https://translate.googleapis.com/*"],
+    host_permissions: [
+      "<all_urls>",
+      "https://translate.googleapis.com/*",
+      "http://127.0.0.1/*",
+      "http://localhost/*",
+      "https://ieee-intuition-2026-production.up.railway.app/*",
+    ],
   },
   vite: () =>
     ({

@@ -480,10 +480,13 @@ function initMagnifyingGlass() {
   let magnifyingMode = false;
   let zoomLevel = 2.5;
   const lensSize = 150;
-  const captureFps = 24;
-  const captureIntervalMs = 1000 / captureFps;
+  // Chrome caps captureVisibleTab at two calls per second. Stay below the
+  // quota and render pointer movement from the most recent snapshot.
+  const captureIntervalMs = 550;
   let captureInFlight = false;
-  let lastCaptureAt = 0;
+  let captureQueued = false;
+  let lastCaptureAt = Number.NEGATIVE_INFINITY;
+  let captureTimer: number | null = null;
   let renderFrame: number | null = null;
   let lastX = 0;
   let lastY = 0;
@@ -587,10 +590,24 @@ function initMagnifyingGlass() {
       });
   };
 
-  const requestSnapshotCapture = async (force = false) => {
-    if (!magnifyingMode || captureInFlight) return;
+  const requestSnapshotCapture = async () => {
+    if (!magnifyingMode) return;
+    if (captureInFlight) {
+      captureQueued = true;
+      return;
+    }
     const now = performance.now();
-    if (!force && now - lastCaptureAt < captureIntervalMs) {
+    const waitMs = captureIntervalMs - (now - lastCaptureAt);
+    if (waitMs > 0) {
+      if (captureTimer === null) {
+        captureTimer = window.setTimeout(
+          () => {
+            captureTimer = null;
+            void requestSnapshotCapture();
+          },
+          Math.max(0, waitMs),
+        );
+      }
       return;
     }
     lastCaptureAt = now;
@@ -618,6 +635,11 @@ function initMagnifyingGlass() {
           scheduleRender();
         };
         img.src = response.dataUrl;
+      } else {
+        console.warn(
+          "[IEEE Extension] Snapshot capture was rejected:",
+          response?.error ?? "Unknown capture error",
+        );
       }
     } catch (error) {
       console.warn("[IEEE Extension] Snapshot capture failed:", error);
@@ -626,6 +648,10 @@ function initMagnifyingGlass() {
         magnifyingLens.style.visibility = prevVisibility;
       }
       captureInFlight = false;
+      if (captureQueued) {
+        captureQueued = false;
+        void requestSnapshotCapture();
+      }
     }
   };
 
@@ -725,14 +751,14 @@ function initMagnifyingGlass() {
     "scroll",
     () => {
       if (!magnifyingMode) return;
-      requestSnapshotCapture(true);
+      requestSnapshotCapture();
     },
     { passive: true },
   );
 
   window.addEventListener("resize", () => {
     if (!magnifyingMode) return;
-    requestSnapshotCapture(true);
+    requestSnapshotCapture();
   });
 
   browser.runtime.onMessage.addListener((message) => {
@@ -749,11 +775,16 @@ function initMagnifyingGlass() {
       snapshotReady = false;
       magnifyingLens.style.display = "block";
       applyCursor(true);
-      requestSnapshotCapture(true);
+      requestSnapshotCapture();
       scheduleRender();
     } else {
       magnifyingLens.style.display = "none";
       applyCursor(false);
+      if (captureTimer !== null) {
+        window.clearTimeout(captureTimer);
+        captureTimer = null;
+      }
+      captureQueued = false;
     }
 
     notifyMagnifyingMode(magnifyingMode);

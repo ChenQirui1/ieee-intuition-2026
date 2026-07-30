@@ -2,11 +2,9 @@
  * API service for connecting to the backend server
  */
 
-// Production
-const API_BASE_URL = "https://ieee-intuition-2026-production.up.railway.app";
-
-//Local development (uncomment for local testing)
-//const API_BASE_URL = 'http://127.0.0.1:8000';
+const API_BASE_URL =
+  import.meta.env.WXT_API_BASE_URL ||
+  "https://ieee-intuition-2026-production.up.railway.app";
 
 export type LanguageCode = "en" | "zh" | "ms" | "ta";
 
