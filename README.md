@@ -2,9 +2,20 @@
 
 ClearWeb is a Chrome extension and FastAPI backend that makes public web pages easier to read and use. It provides plain-language summaries, grounded checklists and step-by-step guides, image descriptions, read-aloud support, a magnifier, accessible page styles, optional page translation, and English, Chinese, Malay, and Tamil UI support.
 
+The default branch is **`master`**. The extension runs in Chrome; AI features connect to a backend on your computer at `http://127.0.0.1:8000`. Your OpenAI key belongs in the backend's `server/.env` file. There is no OpenAI-key field in the Chrome extension.
+
+Already installed ClearWeb? Follow [Update an existing installation](#update-an-existing-installation). For the code audit and verification details, see [AUDIT_FIXES.md](AUDIT_FIXES.md).
+
 ## Run it locally on Windows
 
 Prerequisites: Python 3.11 or newer, Node.js 24, and pnpm 10. The automated checks use Python 3.13.
+
+For a new checkout, open PowerShell and run:
+
+```powershell
+git clone https://github.com/ChenQirui1/ieee-intuition-2026.git
+cd ieee-intuition-2026
+```
 
 ### 1. Configure and start the backend
 
@@ -16,9 +27,16 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+notepad .env
 ```
 
 Open `server/.env` in a text editor and paste your OpenAI key after `OPENAI_API_KEY=`. Do not put the key in the extension or commit `.env`.
+
+Replace the placeholder below with your own key, save the file, and close the editor. Leave the other settings at their defaults for local use.
+
+```dotenv
+OPENAI_API_KEY=your-key-here
+```
 
 Then start the API:
 
@@ -28,11 +46,13 @@ Then start the API:
 
 The local server listens only on `http://127.0.0.1:8000`. Verify it at [http://127.0.0.1:8000/healthz](http://127.0.0.1:8000/healthz); the response should be `{"ok":true}`.
 
+Keep this PowerShell window running while using AI features. The health check confirms that the backend is reachable; it does not validate the OpenAI key or make a paid AI request. Restart the backend after changing `.env`.
+
 The default `DATABASE_TYPE=mock` needs no Firebase or MongoDB account. Its cache is cleared when the backend restarts.
 
 ### 2. Build and load the Chrome extension
 
-In a second PowerShell window:
+Open a second PowerShell window **at the repository root**, then run:
 
 ```powershell
 cd wxt
@@ -51,11 +71,66 @@ In Chrome:
 
 After rebuilding, click ClearWeb's reload button on `chrome://extensions/` and refresh the webpage being tested.
 
+### 3. Check the extension
+
+1. Open a public webpage with text and images, then click the pinned ClearWeb icon to open its side panel.
+2. Confirm that the backend connection indicator is connected and request a summary.
+3. Enable the magnifier and move it over text. Switch to another tab and back; the lens and controls should match the active page.
+4. Turn on selection mode, select a public image, and request a description.
+5. Start a summary or chat reply, then switch tabs or reload before it finishes. A response from the previous page must not appear in the new page context.
+6. In settings, try Translate Page, breadcrumbs, and ad hiding, then turn them off and check that the page returns to its normal appearance.
+
+AI summaries, chat, and image descriptions require a working OpenAI key. The magnifier and page styling do not require an AI request. Test on ordinary HTTP(S) pages; Chrome's internal pages such as `chrome://extensions/` cannot run the content script. The backend scrapes public page content, so authenticated pages and JavaScript-only sites may not produce useful summaries.
+
+## Update an existing installation
+
+Stop the running backend with **Ctrl+C**. From the repository root, update the merged code and its dependencies:
+
+```powershell
+git switch master
+git pull --ff-only origin master
+
+Push-Location server
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+Pop-Location
+
+Push-Location wxt
+pnpm install --frozen-lockfile
+pnpm compile
+pnpm build
+Pop-Location
+```
+
+These commands assume the first-time setup has already created `server/.venv`. Keep your existing `server/.env`; do not overwrite it with the example file.
+
+Then:
+
+1. Restart the backend with `cd server` followed by `.\run_server.ps1`.
+2. Open `chrome://extensions/`.
+3. If ClearWeb was loaded from this checkout's `wxt/.output/chrome-mv3`, click its **Reload** button.
+4. If it was loaded from an extracted ZIP in another folder, reloading still uses that folder. Replace it with the new package or load this checkout's `wxt/.output/chrome-mv3` instead. Keep only one ClearWeb installation enabled while testing.
+5. Refresh the webpage, reopen ClearWeb, and repeat the checks above.
+
 ## Pre-built Chrome package
 
-`clearweb-1.0.0-chrome.zip` contains the current production build. Extract it first, then use **Load unpacked** and select the extracted folder. Chrome cannot load the ZIP file itself.
+[Download the Chrome package](clearweb-1.0.0-chrome.zip). It contains the production extension build, configured for the local backend. Extract it first, then use **Load unpacked** and select the extracted folder containing `manifest.json`. Chrome cannot load the ZIP file itself.
+
+The ZIP does not contain the Python backend or an OpenAI key. Complete the backend setup above even if you use the pre-built extension; Node.js and pnpm are only needed when building the extension from source.
 
 The older `clearweb_chrome_extension_old.zip` is retained only for historical reference and should not be installed.
+
+## Troubleshooting
+
+| Symptom | What to check |
+| --- | --- |
+| Backend says disconnected | Keep the backend terminal running and open `/healthz`. The default extension expects `http://127.0.0.1:8000`; a different port or custom build needs matching configuration. |
+| Health check works, but AI requests fail | Check `OPENAI_API_KEY` in `server/.env`, the configured model, and your API account's quota. Restart the backend after changing the file. Check the terminal for the error. |
+| Magnifier or selection does nothing | Reload the updated extension, refresh the webpage, and test on a normal HTTP(S) page. Verify that Chrome loaded the new build folder rather than an older extracted ZIP. |
+| Old behavior remains after rebuilding | Check the extension's loaded folder on `chrome://extensions/`. Rebuilding `wxt/.output/chrome-mv3` does not update a ZIP extracted elsewhere. |
+| API returns HTTP 429 | The local per-client, per-endpoint request limit has been reached. Wait one minute before trying again. |
+| Summary is unavailable on a signed-in site | The server cannot reuse your Chrome login session. Try a publicly accessible page. |
+
+When reporting a problem, include the feature, a public test URL, and the relevant error message. Remove API keys, authorization headers, and private page content from anything you share.
 
 ## Configuration
 
