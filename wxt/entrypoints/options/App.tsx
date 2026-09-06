@@ -118,8 +118,8 @@ const UI_STRINGS = {
 
     hide_ads: "Hide Ads",
     hide_ads_desc: "Remove distracting advertisements",
-    simplify_language: "Simplify Language",
-    simplify_language_desc: "Use clearer, easier-to-understand words",
+    simplify_language: "Translate Page",
+    simplify_language_desc: "Translate webpage text into your selected language",
     show_breadcrumbs: "Show Breadcrumbs",
     show_breadcrumbs_desc: "Display navigation paths on pages",
 
@@ -149,7 +149,7 @@ const UI_STRINGS = {
     label_auto_read: "Auto-read assistant replies",
 
     hide_ads_enabled: "Hide Ads enabled",
-    simplify_language_enabled: "Simplify Language enabled",
+    simplify_language_enabled: "Page translation enabled",
     show_breadcrumbs_enabled: "Show Breadcrumbs enabled",
 
     live_preview: "Live Preview",
@@ -162,8 +162,8 @@ const UI_STRINGS = {
     breadcrumb_home: "Home",
     breadcrumb_settings: "Settings",
     breadcrumb_accessibility: "Accessibility",
-    preview_easy_words: "Easy words make reading simple.",
-    preview_complex_words: "Complex terminology facilitates comprehension.",
+    preview_easy_words: "Page translation is enabled for your selected language.",
+    preview_complex_words: "Page translation is off; original text is preserved.",
     current_settings: "Current Settings:",
     ads: "Ads",
     ads_hidden: "Hidden",
@@ -228,8 +228,8 @@ const UI_STRINGS = {
 
     hide_ads: "隐藏广告",
     hide_ads_desc: "移除分散注意力的广告",
-    simplify_language: "简化语言",
-    simplify_language_desc: "使用更清晰、更易理解的表达",
+    simplify_language: "翻译网页",
+    simplify_language_desc: "将网页文字翻译成您选择的语言",
     show_breadcrumbs: "显示面包屑导航",
     show_breadcrumbs_desc: "在页面上显示导航路径",
 
@@ -258,7 +258,7 @@ const UI_STRINGS = {
     label_auto_read: "自动朗读助手回复",
 
     hide_ads_enabled: "已开启隐藏广告",
-    simplify_language_enabled: "已开启简化语言",
+    simplify_language_enabled: "已开启网页翻译",
     show_breadcrumbs_enabled: "已开启面包屑导航",
 
     live_preview: "实时预览",
@@ -271,8 +271,8 @@ const UI_STRINGS = {
     breadcrumb_home: "首页",
     breadcrumb_settings: "设置",
     breadcrumb_accessibility: "无障碍",
-    preview_easy_words: "简单的词语让阅读更轻松。",
-    preview_complex_words: "复杂术语促进理解过程。",
+    preview_easy_words: "网页翻译已针对您选择的语言开启。",
+    preview_complex_words: "网页翻译已关闭；保留原始文字。",
     current_settings: "当前设置：",
     ads: "广告",
     ads_hidden: "已隐藏",
@@ -337,8 +337,8 @@ const UI_STRINGS = {
 
     hide_ads: "Sembunyi Iklan",
     hide_ads_desc: "Buang iklan yang mengganggu",
-    simplify_language: "Permudahkan Bahasa",
-    simplify_language_desc: "Gunakan perkataan yang lebih jelas dan mudah",
+    simplify_language: "Terjemah Halaman",
+    simplify_language_desc: "Terjemah teks laman ke bahasa pilihan anda",
     show_breadcrumbs: "Tunjuk Breadcrumbs",
     show_breadcrumbs_desc: "Paparkan laluan navigasi pada halaman",
 
@@ -368,7 +368,7 @@ const UI_STRINGS = {
     label_auto_read: "Auto-baca balasan pembantu",
 
     hide_ads_enabled: "Sembunyi Iklan diaktifkan",
-    simplify_language_enabled: "Permudahkan Bahasa diaktifkan",
+    simplify_language_enabled: "Terjemahan halaman diaktifkan",
     show_breadcrumbs_enabled: "Breadcrumbs diaktifkan",
 
     live_preview: "Pratonton Langsung",
@@ -381,8 +381,8 @@ const UI_STRINGS = {
     breadcrumb_home: "Laman Utama",
     breadcrumb_settings: "Tetapan",
     breadcrumb_accessibility: "Kebolehcapaian",
-    preview_easy_words: "Perkataan mudah menjadikan bacaan lebih senang.",
-    preview_complex_words: "Terminologi kompleks memudahkan pemahaman.",
+    preview_easy_words: "Terjemahan halaman aktif untuk bahasa pilihan anda.",
+    preview_complex_words: "Terjemahan dimatikan; teks asal dikekalkan.",
     current_settings: "Tetapan Semasa:",
     ads: "Iklan",
     ads_hidden: "Disembunyikan",
@@ -450,8 +450,8 @@ const UI_STRINGS = {
 
     hide_ads: "விளம்பரங்களை மறை",
     hide_ads_desc: "கவனச்சிதறலை ஏற்படுத்தும் விளம்பரங்களை நீக்கு",
-    simplify_language: "மொழியை எளிமைப்படுத்து",
-    simplify_language_desc: "எளிதாக புரியும் சொற்களை பயன்படுத்தவும்",
+    simplify_language: "பக்கத்தை மொழிபெயர்",
+    simplify_language_desc: "இணையப் பக்க உரையை நீங்கள் தேர்ந்தெடுத்த மொழிக்கு மொழிபெயர்க்கவும்",
     show_breadcrumbs: "Breadcrumbs காண்பி",
     show_breadcrumbs_desc: "பக்கங்களில் வழிசெலுத்தல் பாதையை காண்பி",
 
@@ -483,7 +483,7 @@ const UI_STRINGS = {
     label_auto_read: "உதவியாளர் பதில்கள் தானாக வாசிப்பு",
 
     hide_ads_enabled: "விளம்பரங்கள் மறை இயக்கு",
-    simplify_language_enabled: "மொழி எளிமைப்படுத்தல் இயக்கு",
+    simplify_language_enabled: "பக்க மொழிபெயர்ப்பு இயக்கப்பட்டது",
     show_breadcrumbs_enabled: "Breadcrumbs இயக்கு",
 
     live_preview: "நேரடி முன்பார்வை",
@@ -496,8 +496,8 @@ const UI_STRINGS = {
     breadcrumb_home: "முகப்பு",
     breadcrumb_settings: "அமைப்புகள்",
     breadcrumb_accessibility: "அணுகல்தன்மை",
-    preview_easy_words: "எளிய சொற்கள் வாசிப்பை எளிதாக்கும்.",
-    preview_complex_words: "சிக்கலான சொற்கள் புரிதலை மேம்படுத்தும்.",
+    preview_easy_words: "நீங்கள் தேர்ந்தெடுத்த மொழிக்குப் பக்க மொழிபெயர்ப்பு இயக்கப்பட்டுள்ளது.",
+    preview_complex_words: "மொழிபெயர்ப்பு முடக்கப்பட்டுள்ளது; அசல் உரை பாதுகாக்கப்படும்.",
     current_settings: "தற்போதைய அமைப்புகள்:",
     ads: "விளம்பரங்கள்",
     ads_hidden: "மறைக்கப்பட்டது",

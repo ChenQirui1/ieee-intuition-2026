@@ -44,7 +44,9 @@ async function translateSingleText(text: string, targetLanguage: LanguageCode): 
   params.set('dj', '1');
   params.set('q', text);
 
-  const resp = await fetch(`${GOOGLE_TRANSLATE_ENDPOINT}?${params.toString()}`);
+  const resp = await fetch(`${GOOGLE_TRANSLATE_ENDPOINT}?${params.toString()}`, {
+    signal: AbortSignal.timeout(15_000),
+  });
   if (!resp.ok) {
     throw new Error(`Google translate failed: ${resp.status}`);
   }
@@ -66,7 +68,7 @@ function mapWithConcurrency<T, R>(
       const index = cursor;
       cursor += 1;
       if (index >= items.length) return;
-      results[index] = await mapper(items[index], index);
+      results[index] = await mapper(items[index]!, index);
     }
   });
   return Promise.all(workers).then(() => results);
@@ -91,11 +93,12 @@ function parseMarkedPayload(payload: string, expectedCount: number): string[] | 
   const parsed = new Array<string>(expectedCount).fill('');
   for (let i = 0; i < markerMatches.length; i += 1) {
     const current = markerMatches[i];
+    if (!current) return null;
     if (!Number.isFinite(current.index) || current.index < 0 || current.index >= expectedCount) {
       return null;
     }
 
-    const nextStart = i + 1 < markerMatches.length ? markerMatches[i + 1].start : payload.length;
+    const nextStart = markerMatches[i + 1]?.start ?? payload.length;
     const segmentStart = current.start + current.marker.length;
     if (segmentStart < 0 || nextStart < segmentStart) return null;
 
@@ -132,14 +135,35 @@ async function translateTexts(texts: string[], targetLanguage: LanguageCode): Pr
     }
   });
 
-  return translated.map((item, index) => (item && item.trim() ? item : texts[index]));
+  return translated.map((item, index) =>
+    item && item.trim() ? item : (texts[index] ?? ''),
+  );
 }
 
 export default defineBackground(() => {
+  browser.sidePanel?.setPanelBehavior({ openPanelOnActionClick: true })
+    .catch(error => console.warn('[ClearWeb] Could not enable toolbar launcher:', error));
+  let captureInFlight = false;
+  let lastCaptureAt = 0;
   browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.type === 'CAPTURE_VISIBLE_TAB') {
-      const windowId = sender.tab?.windowId ?? browser.windows.WINDOW_ID_CURRENT;
-      browser.tabs.captureVisibleTab(windowId, { format: 'png' })
+      const sourceTab = sender.tab;
+      const sourceTabId = sourceTab?.id;
+      const sourceWindowId = sourceTab?.windowId;
+      if (!sourceTab || sourceTabId === undefined || sourceWindowId === undefined || captureInFlight || Date.now() - lastCaptureAt < 550) {
+        sendResponse({ ok: false, error: 'Capture unavailable; retry shortly.' });
+        return false;
+      }
+      captureInFlight = true;
+      (async () => {
+        const [before] = await browser.tabs.query({ active: true, windowId: sourceWindowId });
+        if (before?.id !== sourceTabId || before.url !== sourceTab.url) throw new Error('Source tab is no longer active');
+        lastCaptureAt = Date.now();
+        const dataUrl = await browser.tabs.captureVisibleTab(sourceWindowId, { format: 'png' });
+        const [after] = await browser.tabs.query({ active: true, windowId: sourceWindowId });
+        if (after?.id !== sourceTabId || after.url !== sourceTab.url) throw new Error('Source tab changed during capture');
+        return dataUrl;
+      })()
         .then((dataUrl) => sendResponse({ ok: true, dataUrl }))
         .catch((error) => {
           console.warn('[IEEE Extension] captureVisibleTab failed:', error);
@@ -147,7 +171,8 @@ export default defineBackground(() => {
             ok: false,
             error: error instanceof Error ? error.message : String(error),
           });
-        });
+        })
+        .finally(() => { captureInFlight = false; });
       return true;
     }
 

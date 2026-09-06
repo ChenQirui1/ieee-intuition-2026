@@ -1,19 +1,17 @@
 """Test and utility endpoints."""
 
-from typing import Any, Dict
-
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends
 
+from api.security import enforce_api_access
+from database.firebase_database import FirebaseDatabase
 from utils.openai_client import (
+    OPENAI_URL,
     get_openai_key,
     get_openai_model,
-    call_openai_chat,
-    OPENAI_URL,
 )
 
-
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(enforce_api_access)])
 
 
 def _get_db():
@@ -27,12 +25,11 @@ def _get_db():
 def firestore_test():
     """Test endpoint - only works with Firebase database."""
     db = _get_db()
-    if hasattr(db, "db"):
+    if isinstance(db, FirebaseDatabase):
         ref = db.db.collection("audits").document("test-doc")
         ref.set({"hello": "world"})
         return {"ok": True, "id": "test-doc"}
-    else:
-        return {"ok": False, "message": "Not using Firebase database"}
+    return {"ok": False, "message": "Not using Firebase database"}
 
 
 @router.get("/openai-test")

@@ -66,6 +66,15 @@ let currentPageLanguageMode: PageLanguageMode = "preferred";
 let preferredLanguageRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 let translationInProgress = false;
 let translationInProgressJobId = 0;
+let pageTranslationEnabled = DEFAULT_USER_PREFERENCES.simplifyLanguage;
+let currentSelectionMode = false;
+let currentMagnifyingMode = false;
+
+const originalHighlightStyles = new WeakMap<
+  HTMLElement,
+  Array<{ property: string; value: string; priority: string }>
+>();
+const originalBodyCursors = new WeakMap<HTMLElement, { value: string; priority: string }>();
 
 function startTranslationJob(): number {
   activeTranslateJobId += 1;
@@ -219,6 +228,7 @@ async function applyPreferredLanguage(
 
     for (let i = 0; i < batch.length; i += 1) {
       const key = batch[i];
+      if (key === undefined) continue;
       const value = translated[i] ?? key;
       cache.set(key, value);
       applyKey(key, value);
@@ -232,7 +242,7 @@ async function applyPageLanguageMode(
 ) {
   const jobId = startTranslationJob();
 
-  if (mode === "original" || targetLanguage === "en") {
+  if (!pageTranslationEnabled || mode === "original" || targetLanguage === "en") {
     restoreOriginalLanguage();
     return;
   }
@@ -253,7 +263,7 @@ function schedulePreferredLanguageRefresh(delayMs: number = 1200) {
     clearTimeout(preferredLanguageRefreshTimer);
     preferredLanguageRefreshTimer = null;
   }
-  if (currentPageLanguageMode !== "preferred") return;
+  if (!pageTranslationEnabled || currentPageLanguageMode !== "preferred") return;
   preferredLanguageRefreshTimer = setTimeout(() => {
     if (currentPageLanguageMode !== "preferred") return;
     if (translationInProgress) {
@@ -305,17 +315,16 @@ function initInterpreter() {
  * Initialize click handler to send element data to sidepanel
  */
 function initClickHandler() {
-  let selectionMode = false;
   let selectedElement: HTMLElement | null = null;
   let hoveredElement: HTMLElement | null = null;
 
   // Listen for selection mode toggle from sidepanel
   browser.runtime.onMessage.addListener((message) => {
     if (message.type === "TOGGLE_SELECTION_MODE") {
-      selectionMode = message.enabled;
+      currentSelectionMode = message.enabled;
 
       // Clear selection when turning off
-      if (!selectionMode) {
+      if (!currentSelectionMode) {
         if (selectedElement) {
           selectedElement = null;
         }
@@ -327,14 +336,14 @@ function initClickHandler() {
 
       console.log(
         "[IEEE Extension] Selection mode",
-        selectionMode ? "enabled" : "disabled",
+        currentSelectionMode ? "enabled" : "disabled",
       );
     }
   });
 
   // Add hover effect when selection mode is on
   document.addEventListener("mouseover", (event) => {
-    if (!selectionMode) return;
+    if (!currentSelectionMode) return;
 
     const target = event.target as HTMLElement;
 
@@ -359,7 +368,7 @@ function initClickHandler() {
   });
 
   document.addEventListener("mouseout", (event) => {
-    if (!selectionMode) return;
+    if (!currentSelectionMode) return;
 
     const target = event.target as HTMLElement;
     if (hoveredElement === target) {
@@ -372,7 +381,7 @@ function initClickHandler() {
     "click",
     (event) => {
       // Only handle clicks when selection mode is ON
-      if (!selectionMode) {
+      if (!currentSelectionMode) {
         return; // Allow normal clicking when selection mode is OFF
       }
 
@@ -461,15 +470,26 @@ function initClickHandler() {
   );
 
   function addHoverHighlight(element: HTMLElement) {
+    if (!originalHighlightStyles.has(element)) {
+      originalHighlightStyles.set(element, ["outline", "background-color", "cursor"].map(property => ({
+        property,
+        value: element.style.getPropertyValue(property),
+        priority: element.style.getPropertyPriority(property),
+      })));
+    }
     element.style.outline = "3px solid #FEF08A";
     element.style.backgroundColor = "rgba(254, 240, 138, 0.2)";
     element.style.cursor = "pointer";
   }
 
   function removeHoverHighlight(element: HTMLElement) {
-    element.style.outline = "";
-    element.style.backgroundColor = "";
-    element.style.cursor = "";
+    const original = originalHighlightStyles.get(element);
+    if (!original) return;
+    for (const { property, value, priority } of original) {
+      if (value) element.style.setProperty(property, value, priority);
+      else element.style.removeProperty(property);
+    }
+    originalHighlightStyles.delete(element);
   }
 }
 
@@ -477,7 +497,6 @@ function initClickHandler() {
  * Initialize magnifying glass feature (viewport snapshot -> crop -> scale).
  */
 function initMagnifyingGlass() {
-  let magnifyingMode = false;
   let zoomLevel = 2.5;
   const lensSize = 150;
   // Chrome caps captureVisibleTab at two calls per second. Stay below the
@@ -547,9 +566,23 @@ function initMagnifyingGlass() {
 
   const applyCursor = (enabled: boolean) => {
     if (!document.body) return;
-    document.body.style.cursor = enabled
-      ? 'url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2732%22 height=%2732%22 viewBox=%220 0 32 32%22%3E%3Ccircle cx=%2716%22 cy=%2716%22 r=%2714%22 fill=%22none%22 stroke=%22%233B82F6%22 stroke-width=%222%22/%3E%3Cline x1=%2722%22 y1=%2722%22 x2=%2728%22 y2=%2728%22 stroke=%22%233B82F6%22 stroke-width=%222%22/%3E%3C/svg%3E") 16 16, auto'
-      : "auto";
+    if (enabled) {
+      if (!originalBodyCursors.has(document.body)) {
+        originalBodyCursors.set(document.body, {
+          value: document.body.style.getPropertyValue("cursor"),
+          priority: document.body.style.getPropertyPriority("cursor"),
+        });
+      }
+      document.body.style.cursor =
+        'url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2732%22 height=%2732%22 viewBox=%220 0 32 32%22%3E%3Ccircle cx=%2716%22 cy=%2716%22 r=%2714%22 fill=%22none%22 stroke=%22%233B82F6%22 stroke-width=%222%22/%3E%3Cline x1=%2722%22 y1=%2722%22 x2=%2728%22 y2=%2728%22 stroke=%22%233B82F6%22 stroke-width=%222%22/%3E%3C/svg%3E") 16 16, auto';
+      return;
+    }
+    const original = originalBodyCursors.get(document.body);
+    if (original !== undefined) {
+      if (original.value) document.body.style.setProperty("cursor", original.value, original.priority);
+      else document.body.style.removeProperty("cursor");
+      originalBodyCursors.delete(document.body);
+    }
   };
 
   const loadMagnifyingPreference = async () => {
@@ -591,7 +624,7 @@ function initMagnifyingGlass() {
   };
 
   const requestSnapshotCapture = async () => {
-    if (!magnifyingMode) return;
+    if (!currentMagnifyingMode) return;
     if (captureInFlight) {
       captureQueued = true;
       return;
@@ -656,7 +689,7 @@ function initMagnifyingGlass() {
   };
 
   const scheduleRender = () => {
-    if (!magnifyingMode) return;
+    if (!currentMagnifyingMode) return;
     if (renderFrame) {
       cancelAnimationFrame(renderFrame);
     }
@@ -667,7 +700,7 @@ function initMagnifyingGlass() {
   };
 
   const renderMagnifier = () => {
-    if (!magnifyingMode || !magnifierCtx) return;
+    if (!currentMagnifyingMode || !magnifierCtx) return;
     magnifyingLens.style.display = "block";
     magnifyingLens.style.transform = `translate(${lastX + 15}px, ${lastY + 15}px)`;
 
@@ -726,7 +759,7 @@ function initMagnifyingGlass() {
   document.addEventListener("mousemove", (event) => {
     lastX = event.clientX;
     lastY = event.clientY;
-    if (magnifyingMode) {
+    if (currentMagnifyingMode) {
       scheduleRender();
       // Keep the magnification stable by avoiding continuous viewport captures.
       // Snapshot refreshes happen on enable + scroll/resize.
@@ -737,12 +770,12 @@ function initMagnifyingGlass() {
   });
 
   document.addEventListener("mouseleave", () => {
-    if (!magnifyingMode) return;
+    if (!currentMagnifyingMode) return;
     magnifyingLens.style.display = "none";
   });
 
   document.addEventListener("mouseenter", () => {
-    if (!magnifyingMode) return;
+    if (!currentMagnifyingMode) return;
     magnifyingLens.style.display = "block";
     scheduleRender();
   });
@@ -750,14 +783,14 @@ function initMagnifyingGlass() {
   window.addEventListener(
     "scroll",
     () => {
-      if (!magnifyingMode) return;
+      if (!currentMagnifyingMode) return;
       requestSnapshotCapture();
     },
     { passive: true },
   );
 
   window.addEventListener("resize", () => {
-    if (!magnifyingMode) return;
+    if (!currentMagnifyingMode) return;
     requestSnapshotCapture();
   });
 
@@ -766,8 +799,8 @@ function initMagnifyingGlass() {
       return;
     }
 
-    magnifyingMode = message.enabled;
-    if (magnifyingMode) {
+    currentMagnifyingMode = message.enabled;
+    if (currentMagnifyingMode) {
       if (!lastX && !lastY) {
         lastX = Math.round(window.innerWidth / 2);
         lastY = Math.round(window.innerHeight / 2);
@@ -787,7 +820,7 @@ function initMagnifyingGlass() {
       captureQueued = false;
     }
 
-    notifyMagnifyingMode(magnifyingMode);
+    notifyMagnifyingMode(currentMagnifyingMode);
   });
 }
 
@@ -795,16 +828,25 @@ function initMagnifyingGlass() {
  * Initialize message listener for sidepanel commands
  */
 function initMessageListener() {
-  browser.runtime.onMessage.addListener((message) => {
+  browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === "GET_PAGE_CONTENT") {
       handleGetPageContent();
     } else if (message.type === "SCROLL_TO_HEADING") {
       handleScrollToHeading(message.index);
     } else if (message.type === "APPLY_USER_PREFERENCES") {
       if (message.preferences) {
+        pageTranslationEnabled = message.preferences.simplifyLanguage ?? false;
+        preferredPageLanguage =
+          message.preferences.language ?? DEFAULT_USER_PREFERENCES.language;
         applyAccessibilityStyles(message.preferences);
+        void applyPageLanguageMode(
+          currentPageLanguageMode,
+          preferredPageLanguage,
+        );
       } else {
+        pageTranslationEnabled = false;
         removeAccessibilityStyles();
+        void applyPageLanguageMode("original", preferredPageLanguage);
       }
     } else if (message.type === "SET_PAGE_LANGUAGE_MODE") {
       const mode: PageLanguageMode =
@@ -821,6 +863,11 @@ function initMessageListener() {
       preferredPageLanguage = lang;
       applyPageLanguageMode(currentPageLanguageMode, preferredPageLanguage);
       schedulePreferredLanguageRefresh(450);
+    } else if (message.type === "GET_INTERACTION_MODES") {
+      sendResponse({
+        selectionMode: currentSelectionMode,
+        magnifyingMode: currentMagnifyingMode,
+      });
     }
   });
 }
@@ -1151,6 +1198,7 @@ async function initAccessibilityFeatures() {
         preferences,
       );
       applyAccessibilityStyles(preferences);
+      pageTranslationEnabled = preferences.simplifyLanguage ?? false;
       preferredPageLanguage =
         preferences.language ?? DEFAULT_USER_PREFERENCES.language;
       if (currentPageLanguageMode === "preferred") {
@@ -1163,6 +1211,8 @@ async function initAccessibilityFeatures() {
     } else {
       console.log("[IEEE Extension] No preferences found, using defaults");
       removeAccessibilityStyles();
+      updateBreadcrumbs(false);
+      pageTranslationEnabled = false;
       preferredPageLanguage = DEFAULT_USER_PREFERENCES.language;
       if (currentPageLanguageMode === "preferred") {
         await applyPageLanguageMode(
@@ -1178,6 +1228,7 @@ async function initAccessibilityFeatures() {
       if (newPreferences) {
         console.log("[IEEE Extension] Preferences updated:", newPreferences);
         applyAccessibilityStyles(newPreferences);
+        pageTranslationEnabled = newPreferences.simplifyLanguage ?? false;
         preferredPageLanguage =
           newPreferences.language ?? DEFAULT_USER_PREFERENCES.language;
         if (currentPageLanguageMode === "preferred") {
@@ -1189,6 +1240,8 @@ async function initAccessibilityFeatures() {
         }
       } else {
         removeAccessibilityStyles();
+        updateBreadcrumbs(false);
+        pageTranslationEnabled = false;
         preferredPageLanguage = DEFAULT_USER_PREFERENCES.language;
         if (currentPageLanguageMode === "preferred") {
           void applyPageLanguageMode(
@@ -1209,6 +1262,44 @@ function removeAccessibilityStyles() {
   if (existingStyle) {
     existingStyle.remove();
   }
+  updateBreadcrumbs(false);
+}
+
+function updateBreadcrumbs(enabled: boolean) {
+  document.getElementById("ieee-accessibility-breadcrumbs")?.remove();
+  if (!enabled || !document.body) return;
+
+  const nav = document.createElement("nav");
+  nav.id = "ieee-accessibility-breadcrumbs";
+  nav.setAttribute("data-ieee-extension", "true");
+  nav.setAttribute("aria-label", "Page location");
+  nav.style.cssText =
+    "all: initial; display: block; box-sizing: border-box; padding: 8px 16px; " +
+    "background: #fff7b2; color: #111827; border-bottom: 2px solid #111827; " +
+    "font: 600 14px/1.5 system-ui, sans-serif; position: relative; z-index: 2147483646;";
+
+  const parts = window.location.pathname.split("/").filter(Boolean);
+  const entries = [
+    { label: window.location.hostname, href: `${window.location.origin}/` },
+    ...parts.map((part, index) => ({
+      label: (() => {
+        try { return decodeURIComponent(part).replace(/[-_]+/g, " "); }
+        catch { return part.replace(/[-_]+/g, " "); }
+      })(),
+      href: `${window.location.origin}/${parts.slice(0, index + 1).join("/")}`,
+    })),
+  ];
+
+  entries.forEach((entry, index) => {
+    if (index > 0) nav.append(" › ");
+    const link = document.createElement("a");
+    link.href = entry.href;
+    link.textContent = entry.label;
+    link.style.cssText =
+      "all: unset; color: #1d4ed8; text-decoration: underline; cursor: pointer;";
+    nav.appendChild(link);
+  });
+  document.body.prepend(nav);
 }
 
 /**
@@ -1219,6 +1310,7 @@ function applyAccessibilityStyles(preferences: UserPreferences) {
     ...DEFAULT_USER_PREFERENCES,
     ...preferences,
   };
+  updateBreadcrumbs(effectivePreferences.showBreadcrumbs);
   // Remove existing style element if it exists
   const existingStyle = document.getElementById("ieee-accessibility-styles");
   if (existingStyle) {
@@ -1313,10 +1405,9 @@ function applyAccessibilityStyles(preferences: UserPreferences) {
   // Hide ads
   if (effectivePreferences.hideAds) {
     css += `
-      /* Common ad selectors */
-      [class*="ad-"], [id*="ad-"],
-      [class*="advertisement"], [id*="advertisement"],
-      [class*="banner"], [id*="banner"],
+      /* Explicit advertising markers only; avoid broad substring matches. */
+      [data-ad], [data-ad-slot], [data-ad-client],
+      [aria-label="advertisement" i], [aria-label="sponsored" i],
       .ad, .ads, .advert, .advertisement,
       iframe[src*="doubleclick"],
       iframe[src*="googlesyndication"] {

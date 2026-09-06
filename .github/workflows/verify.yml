@@ -1,0 +1,56 @@
+name: Verify ClearWeb
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    env:
+      DATABASE_TYPE: mock
+      ENABLE_TEST_ROUTES: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: server/requirements*.txt
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m pip check
+      - run: pytest -q
+      - run: ruff check api/routes.py api/security.py api/test_routes.py main.py models/models.py services/scraper.py services/scraping.py utils/openai_client.py test_api.py test_scraping.py test_security.py test_openai_client.py conftest.py
+      - run: bandit -q -r api main.py models services utils
+      - run: pip-audit -r requirements.txt
+  extension:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: wxt
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: "10.28.2"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: wxt/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm compile
+      - run: pnpm test
+      - run: pnpm audit
+      - run: pnpm zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clearweb-chrome
+          path: wxt/.output/*-chrome.zip
+          if-no-files-found: error

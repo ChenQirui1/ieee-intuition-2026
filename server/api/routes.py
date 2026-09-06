@@ -1,28 +1,34 @@
 """API routes for scraping, simplification, and chat endpoints."""
 
-import json
-from typing import Any, Dict, List
+import os
+from datetime import datetime, timezone
+from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Depends
 
+from api.security import enforce_api_access
+from database.interface import page_id_for_url, simplification_id_for
 from models.models import (
-    ChatRequest,
-    ChatResponse,
+    ImageCaptionRequest,
+    ImageCaptionResponse,
     ScrapRequest,
     ScrapResponse,
     SimplifyRequest,
     SimplifyResponse,
+    TextCompletionRequest,
+    TextCompletionResponse,
 )
-from database.interface import page_id_for_url, simplification_id_for
 from services.scraping import scrape_url
 from services.simplification import (
-    pick_important_links,
     generate_simplification,
-    extract_best_context,
+    pick_important_links,
 )
-from utils.openai_client import call_openai_chat, get_openai_model
 from utils.language import language_instruction
-
+from utils.openai_client import (
+    call_openai_chat,
+    call_openai_image_caption,
+    get_openai_model,
+)
 
 router = APIRouter()
 
@@ -37,10 +43,20 @@ def _get_db():
 # / endpoint show a simple message
 @router.get("/")
 def root():
-    return {"message": "Bro, please use the /docs"}
+    return {"message": "ClearWeb API", "health": "/healthz", "docs": "/docs"}
 
 
-@router.post("/scrap", response_model=ScrapResponse)
+@router.get("/healthz")
+def healthz():
+    """Zero-cost liveness check; never calls OpenAI or the database."""
+    return {"ok": True}
+
+
+@router.post(
+    "/scrap",
+    response_model=ScrapResponse,
+    dependencies=[Depends(enforce_api_access)],
+)
 def scrap(req: ScrapRequest):
     """Scrape a URL and return structured content."""
     db = _get_db()
@@ -55,7 +71,11 @@ def scrap(req: ScrapRequest):
     )
 
 
-@router.post("/simplify", response_model=SimplifyResponse)
+@router.post(
+    "/simplify",
+    response_model=SimplifyResponse,
+    dependencies=[Depends(enforce_api_access)],
+)
 def simplify(req: SimplifyRequest):
     """Simplify a webpage with intelligent summary and optional checklist."""
     db = _get_db()
@@ -66,10 +86,12 @@ def simplify(req: SimplifyRequest):
 
     if not req.force_regen:
         page = db.get_page(page_id=page_id)
-        if page:
+        if page and _cache_is_fresh(page):
             # Add page_id back to the dict since MongoDB stores it as _id
             page["page_id"] = page_id
             print(f"Using cached page: {page_id}")
+        else:
+            page = None
 
     # Scrape only if page not found in database or force_regen is True
     if page is None:
@@ -83,7 +105,6 @@ def simplify(req: SimplifyRequest):
     important_links = pick_important_links(page["links"])
 
     # Check cache (single simplification per language/hash)
-    cache_key = f"{page['url']}|{lang}|{source_hash}"
     sid = simplification_id_for(
         url=page["url"],
         mode="intelligent",  # New unified mode
@@ -142,34 +163,33 @@ def simplify(req: SimplifyRequest):
     )
 
 
-@router.post("/text-completion")
-def text_completion(
-    body: Dict[str, Any] = Body(
-        ...,
-        openapi_examples={
-            "simple_text": {
-                "summary": "Simple text prompt",
-                "description": "Send a single text prompt for completion",
-                "value": {
-                    "text": "Explain quantum computing in simple terms",
-                    "temperature": 0.7
-                }
-            },
-            "chat_messages": {
-                "summary": "Chat conversation",
-                "description": "Send a conversation with multiple messages",
-                "value": {
-                    "messages": [
-                        {"role": "user", "content": "What is machine learning?"},
-                        {"role": "assistant", "content": "Machine learning is a type of AI that learns from data."},
-                        {"role": "user", "content": "Can you give an example?"}
-                    ],
-                    "temperature": 0.7
-                }
-            }
-        }
-    )
-):
+def _cache_is_fresh(page: dict[str, Any]) -> bool:
+    try:
+        ttl_seconds = max(0, int(os.getenv("PAGE_CACHE_TTL_SECONDS", "3600")))
+    except ValueError:
+        ttl_seconds = 3600
+    if ttl_seconds == 0:
+        return False
+
+    updated_at = page.get("updated_at")
+    if isinstance(updated_at, str):
+        try:
+            updated_at = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+    if not isinstance(updated_at, datetime):
+        return False
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+    return 0 <= (datetime.now(timezone.utc) - updated_at).total_seconds() <= ttl_seconds
+
+
+@router.post(
+    "/text-completion",
+    response_model=TextCompletionResponse,
+    dependencies=[Depends(enforce_api_access)],
+)
+def text_completion(body: TextCompletionRequest):
     """
     Text completion endpoint for ClearWeb.
 
@@ -177,160 +197,33 @@ def text_completion(
     1. **Simple text**: `{"text": "your prompt", "temperature": 0.7}`
     2. **Chat messages**: `{"messages": [{"role": "user", "content": "..."}, ...], "temperature": 0.7}`
     """
-    temperature = body.get("temperature", 0.7)
-
-    if "messages" in body:
-        messages = body.get("messages", [])
-        if not messages:
-            raise HTTPException(
-                status_code=400, detail="'messages' array cannot be empty"
-            )
-
-        for msg in messages:
-            if not isinstance(msg, dict) or "role" not in msg or "content" not in msg:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Each message must have 'role' and 'content'",
-                )
-
-        response_text, model_used = call_openai_chat(
-            messages=messages, temperature=temperature
-        )
-
-    elif "text" in body:
-        text = body.get("text", "").strip()
-        if not text:
-            raise HTTPException(status_code=400, detail="'text' field is required")
-
-        messages = [{"role": "user", "content": text}]
-        response_text, model_used = call_openai_chat(
-            messages=messages, temperature=temperature
-        )
-
-    else:
-        raise HTTPException(
-            status_code=400, detail="Either 'text' or 'messages' field is required"
-        )
-
-    return {"ok": True, "model": model_used, "response": response_text}
+    messages = (
+        [message.model_dump() for message in body.messages]
+        if body.messages is not None
+        else [{"role": "user", "content": body.text or ""}]
+    )
+    response_text, model_used = call_openai_chat(
+        messages=messages, temperature=body.temperature
+    )
+    return TextCompletionResponse(model=model_used, response=response_text)
 
 
-# chat is disabled since it is not used in the current application
-# @router.post("/chat", response_model=ChatResponse)
-# def chat(req: ChatRequest):
-#     """Chat with context about a simplified page."""
-#     db = _get_db()
-
-#     if req.url:
-#         page_id = page_id_for_url(str(req.url))
-#         url_str = str(req.url)
-#     elif req.page_id:
-#         page_id = req.page_id
-#         url_str = ""
-#     else:
-#         raise HTTPException(status_code=400, detail="Provide url or page_id.")
-
-#     page = db.get_page(page_id=page_id)
-#     if not page:
-#         if not req.url:
-#             raise HTTPException(
-#                 status_code=404, detail="Page not found. Provide url to scrape."
-#             )
-#         page_bundle = scrape_url(str(req.url), db, session_id=req.session_id)
-#         page = db.get_page(page_id=page_bundle["page_id"]) or page_bundle
-
-#     source_text = page.get("source_text", "")
-#     title = (page.get("meta") or {}).get("title")
-#     source_hash = page.get("source_text_hash", "")
-#     page_url = page.get("url") or url_str
-#     lang = req.language
-
-#     simpl_output = None
-#     simpl_id = req.simplification_id
-
-#     if simpl_id:
-#         simpl_data = db.get_simplification(simplification_id=simpl_id)
-#         if simpl_data:
-#             simpl_output = simpl_data.get("output")
-#     else:
-#         cached = db.find_simplification(
-#             url=page_url,
-#             mode="intelligent",
-#             language=lang,
-#             source_text_hash=source_hash,
-#         )
-#         if cached:
-#             simpl_output = cached.get("output")
-#             simpl_id = cached.get("_id")
-
-#     if simpl_output is None and page_url:
-#         important_links = pick_important_links(page.get("links", []))
-#         out, model_used = generate_simplification(
-#             title=title,
-#             source_text=source_text,
-#             links=important_links,
-#             language=lang,
-#             max_retries=1,
-#         )
-#         sid = simplification_id_for(
-#             url=page_url,
-#             mode="intelligent",
-#             language=lang,
-#             source_text_hash=source_hash,
-#         )
-#         db.save_simplification(
-#             simplification_id=sid,
-#             url=page_url,
-#             page_id=page_id,
-#             source_text_hash=source_hash,
-#             mode="intelligent",
-#             language=lang,
-#             output=out,
-#             model=model_used,
-#             session_id=req.session_id,
-#         )
-#         simpl_output = out
-#         simpl_id = sid
-
-#     best_ctx = extract_best_context(
-#         source_text=source_text,
-#         simpl_output=simpl_output,
-#         language=lang,
-#         section_id=req.section_id,
-#         section_text=req.section_text,
-#     )
-
-#     system = (
-#         "You are a helpful accessibility assistant embedded in a browser extension. "
-#         "Answer using only the provided context. "
-#         "Use very simple language. Short sentences. "
-#         + language_instruction(lang)
-#         + " If asked for steps, respond as numbered steps. "
-#         "If asked for a checklist, respond as bullet points. "
-#         "If not sure, say so and suggest what to look for on the page."
-#     )
-
-#     context = {"title": title, "url": page_url, "context": best_ctx}
-
-#     messages: List[Dict[str, str]] = [{"role": "system", "content": system}]
-#     for m in req.history[-6:]:
-#         messages.append({"role": m.role, "content": m.content})
-
-#     messages.append(
-#         {
-#             "role": "user",
-#             "content": json.dumps(
-#                 {"question": req.message, "context": context}, ensure_ascii=False
-#             ),
-#         }
-#     )
-
-#     answer, model_used = call_openai_chat(messages=messages, temperature=0.2)
-
-#     return ChatResponse(
-#         ok=True,
-#         model=model_used,
-#         answer=answer,
-#         page_id=page_id,
-#         simplification_id=simpl_id,
-#     )
+@router.post(
+    "/image-caption",
+    response_model=ImageCaptionResponse,
+    dependencies=[Depends(enforce_api_access)],
+)
+def image_caption(req: ImageCaptionRequest):
+    """Generate a short accessible caption for an HTTP(S) image."""
+    hint = (req.alt_text or "").strip()
+    prompt = (
+        "Describe this image for a blind or low-vision reader. "
+        "Use one or two factual sentences. Do not guess hidden context. "
+        + language_instruction(req.language)
+    )
+    if hint:
+        prompt += f" The webpage's existing text hint is: {hint}"
+    caption, model_used = call_openai_image_caption(
+        image_url=str(req.image_url), prompt=prompt
+    )
+    return ImageCaptionResponse(model=model_used, caption=caption)

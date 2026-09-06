@@ -12,6 +12,7 @@ import {
   simplifyPage,
   sendImageCaption,
   sendTextCompletion,
+  testConnection,
   type LanguageCode,
 } from "./api";
 import { useTts } from "./useTts";
@@ -536,6 +537,8 @@ function App() {
   const [magnifyingMode, setMagnifyingMode] = useState(false);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [showDevPanel, setShowDevPanel] = useState(false);
+  const [currentTabId, setCurrentTabId] = useState<number | null>(null);
+  const [pageRevision, setPageRevision] = useState(0);
   const [currentUrl, setCurrentUrl] = useState<string>("");
   const [pageId, setPageId] = useState<string>("");
   const [simplificationId, setSimplificationId] = useState<string>("");
@@ -554,7 +557,8 @@ function App() {
   >("preferred");
 
   const ui = UI_STRINGS[language] ?? UI_STRINGS.en;
-  const t = (key: keyof typeof UI_STRINGS.en) => ui[key] ?? UI_STRINGS.en[key];
+  const t = (key: keyof typeof UI_STRINGS.en): string =>
+    ui[key] ?? UI_STRINGS.en[key] ?? String(key);
 
   const [ttsTarget, setTtsTarget] = useState<
     | { kind: "summary" }
@@ -620,6 +624,30 @@ function App() {
     ta: null,
   });
   const activeLocalizationJobRef = useRef(0);
+  const currentUrlRef = useRef("");
+  const activeTabIdRef = useRef<number | null>(null);
+  const contextVersionRef = useRef(0);
+  const activeSimplifyJobRef = useRef(0);
+  const simplifyAbortRef = useRef<AbortController | null>(null);
+  const isSimplifyingRef = useRef(false);
+  const chatAbortRef = useRef<AbortController | null>(null);
+  const panelWindowIdRef = useRef<number | null>(null);
+
+  const invalidatePageContext = () => {
+    contextVersionRef.current += 1;
+    activeSimplifyJobRef.current += 1;
+    activeLocalizationJobRef.current += 1;
+    simplifyAbortRef.current?.abort();
+    chatAbortRef.current?.abort();
+    chatAbortRef.current = null;
+    simplifyAbortRef.current = null;
+    isSimplifyingRef.current = false;
+    setIsSimplifying(false);
+    setIsChatLoading(false);
+    setSelectionMode(false);
+    setMagnifyingMode(false);
+    tts.stop();
+  };
 
   useEffect(() => {
     if (tts.status === "idle") {
@@ -648,22 +676,6 @@ function App() {
     // Test backend connection
     testBackendConnection();
 
-    // Get current tab URL
-    const getCurrentUrl = async () => {
-      try {
-        const tabs = await browser.tabs.query({
-          active: true,
-          currentWindow: true,
-        });
-        const url = tabs[0]?.url;
-        if (!url) return;
-        setCurrentUrl((prev) => (prev === url ? prev : url));
-      } catch (error) {
-        console.error("[Sidepanel] Failed to get current URL:", error);
-      }
-    };
-    getCurrentUrl();
-
     // Load user preferences for zoom
     loadPreferences();
 
@@ -673,7 +685,14 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!currentUrl) return;
+    contextVersionRef.current += 1;
+    activeSimplifyJobRef.current += 1;
+    activeLocalizationJobRef.current += 1;
+    simplifyAbortRef.current?.abort();
+    simplifyAbortRef.current = null;
+    chatAbortRef.current?.abort();
+    chatAbortRef.current = null;
+    isSimplifyingRef.current = false;
     setReadingMode("easy_read");
     setActionAssistDismissed(false);
     setChecklistDone({});
@@ -691,6 +710,7 @@ function App() {
     setHeadingsRaw([]);
     setHeadings([]);
     setIsSimplifying(false);
+    setIsChatLoading(false);
     setSimplifyingMode(null);
     setPageTitle("");
     setPageParagraphs([]);
@@ -742,31 +762,81 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [currentUrl]);
+  }, [currentTabId, currentUrl, pageRevision]);
 
   useEffect(() => {
+    let syncJob = 0;
+    let disposed = false;
     const syncUrlFromActiveTab = async () => {
+      const job = ++syncJob;
       try {
+        if (panelWindowIdRef.current === null) {
+          const panelWindow = await browser.windows.getCurrent();
+          panelWindowIdRef.current = panelWindow.id ?? null;
+        }
+        if (disposed || job !== syncJob || panelWindowIdRef.current === null) return;
         const tabs = await browser.tabs.query({
           active: true,
-          currentWindow: true,
+          windowId: panelWindowIdRef.current,
         });
-        const url = tabs[0]?.url;
-        if (!url) return;
+        if (disposed || job !== syncJob) return;
+        const url = tabs[0]?.url ?? "";
+        const tabId = tabs[0]?.id ?? null;
+        if (tabId !== activeTabIdRef.current || url !== currentUrlRef.current) {
+          invalidatePageContext();
+        }
+        activeTabIdRef.current = tabId;
+        currentUrlRef.current = url;
+        setCurrentTabId(tabId);
         setCurrentUrl((prev) => (prev === url ? prev : url));
+
+        if (tabId !== null) {
+          try {
+            const modes = await browser.tabs.sendMessage(tabId, {
+              type: "GET_INTERACTION_MODES",
+            });
+            if (!disposed && job === syncJob && activeTabIdRef.current === tabId) {
+              setSelectionMode(!!modes?.selectionMode);
+              setMagnifyingMode(!!modes?.magnifyingMode);
+            }
+          } catch {
+            if (!disposed && job === syncJob && activeTabIdRef.current === tabId) {
+              setSelectionMode(false);
+              setMagnifyingMode(false);
+            }
+          }
+        }
       } catch (error) {
         console.warn("[Sidepanel] Failed to sync URL from active tab:", error);
       }
     };
 
-    const handleActivated = () => {
+    const handleActivated = (info: { tabId: number; windowId: number }) => {
+      if (panelWindowIdRef.current !== null && info.windowId !== panelWindowIdRef.current) return;
+      invalidatePageContext();
+      activeTabIdRef.current = info.tabId;
+      currentUrlRef.current = "";
       void syncUrlFromActiveTab();
     };
 
     const handleUpdated = (_tabId: number, changeInfo: any, tab: any) => {
-      // Only react to actual URL changes for the active tab; this avoids spamming during load.
       if (!tab?.active) return;
+      if (panelWindowIdRef.current !== null && tab.windowId !== panelWindowIdRef.current) return;
+      if (changeInfo.status === "loading") {
+        invalidatePageContext();
+        currentUrlRef.current = "";
+        setPageRevision(value => value + 1);
+        return;
+      }
+      if (changeInfo.status === "complete") {
+        void syncUrlFromActiveTab().then(() => {
+          if (!disposed) setPageRevision(value => value + 1);
+        });
+        return;
+      }
       if (!changeInfo?.url) return;
+      invalidatePageContext();
+      currentUrlRef.current = changeInfo.url;
       void syncUrlFromActiveTab();
     };
 
@@ -780,6 +850,10 @@ function App() {
     void syncUrlFromActiveTab();
 
     return () => {
+      disposed = true;
+      syncJob += 1;
+      simplifyAbortRef.current?.abort();
+      chatAbortRef.current?.abort();
       try {
         browser.tabs.onActivated.removeListener(handleActivated as any);
         browser.tabs.onUpdated.removeListener(handleUpdated as any);
@@ -926,13 +1000,13 @@ function App() {
     // Refresh summary/headings when the URL changes (or first loads).
     if (!preferencesLoaded || !currentUrl) return;
     requestPageSummary();
-  }, [currentUrl, preferencesLoaded]);
+  }, [currentTabId, currentUrl, pageRevision, preferencesLoaded]);
 
   useEffect(() => {
     // Default to the preferred language, but allow switching the page back to its original language.
     if (!preferencesLoaded || !currentUrl) return;
     applyPageLanguageModeToActiveTab(pageLanguageMode, language);
-  }, [pageLanguageMode, language, currentUrl, preferencesLoaded]);
+  }, [pageLanguageMode, language, currentTabId, currentUrl, pageRevision, preferencesLoaded]);
 
   const requestPageSummary = async () => {
     try {
@@ -945,12 +1019,16 @@ function App() {
 
       // If the stored URL is stale, update it first so summary/chat keys stay in sync.
       const tabUrl = typeof tab.url === "string" ? tab.url : "";
-      if (tabUrl && tabUrl !== currentUrl) {
+      if (tabUrl !== currentUrlRef.current || tab.id !== activeTabIdRef.current) return;
+      if (tabUrl && (tabUrl !== currentUrl || tab.id !== currentTabId)) {
+        activeTabIdRef.current = tab.id;
+        currentUrlRef.current = tabUrl;
+        setCurrentTabId(tab.id);
         setCurrentUrl((prev) => (prev === tabUrl ? prev : tabUrl));
         return;
       }
 
-      browser.tabs.sendMessage(tab.id, { type: "GET_PAGE_CONTENT" });
+      await browser.tabs.sendMessage(tab.id, { type: "GET_PAGE_CONTENT" });
     } catch (error) {
       console.error("[Sidepanel] Failed to request page summary:", error);
     }
@@ -967,8 +1045,9 @@ function App() {
     const missing = new Map<string, number[]>();
 
     for (let i = 0; i < texts.length; i += 1) {
+      const value = texts[i];
       const original =
-        typeof texts[i] === "string" ? texts[i] : String(texts[i] ?? "");
+        typeof value === "string" ? value : String(value ?? "");
       const { leading, core, trailing } = splitWhitespace(original);
       const key = core.trim();
       if (!key) {
@@ -1002,6 +1081,7 @@ function App() {
       if (response?.ok && Array.isArray(response.translations)) {
         for (let k = 0; k < missingKeys.length; k += 1) {
           const key = missingKeys[k];
+          if (key === undefined) continue;
           const candidate = response.translations[k];
           const translated =
             typeof candidate === "string" && candidate.trim() ? candidate : key;
@@ -1238,73 +1318,78 @@ function App() {
   const ensureLocalizedEasyRead = async (
     targetLanguage: LanguageCode,
   ): Promise<EasyReadOutput | null> => {
+    const pageCache = localizedEasyReadRef.current;
     if (!easyReadRaw) return null;
-    localizedEasyReadRef.current.en = easyReadRaw;
+    pageCache.en = easyReadRaw;
     if (targetLanguage === "en") return easyReadRaw;
-    const cached = localizedEasyReadRef.current[targetLanguage];
+    const cached = pageCache[targetLanguage];
     if (cached) return cached;
     const localized = await localizeEasyReadOutput(easyReadRaw, targetLanguage);
-    localizedEasyReadRef.current[targetLanguage] = localized;
+    pageCache[targetLanguage] = localized;
     return localized;
   };
 
   const ensureLocalizedChecklist = async (
     targetLanguage: LanguageCode,
   ): Promise<ChecklistGuide | null> => {
+    const pageCache = localizedChecklistRef.current;
     if (!checklistGuideRaw) return null;
-    localizedChecklistRef.current.en = checklistGuideRaw;
+    pageCache.en = checklistGuideRaw;
     if (targetLanguage === "en") return checklistGuideRaw;
-    const cached = localizedChecklistRef.current[targetLanguage];
+    const cached = pageCache[targetLanguage];
     if (cached) return cached;
     const localized = await localizeChecklistGuide(
       checklistGuideRaw,
       targetLanguage,
     );
-    localizedChecklistRef.current[targetLanguage] = localized;
+    pageCache[targetLanguage] = localized;
     return localized;
   };
 
   const ensureLocalizedStepByStep = async (
     targetLanguage: LanguageCode,
   ): Promise<StepByStepGuide | null> => {
+    const pageCache = localizedStepByStepRef.current;
     if (!stepByStepGuideRaw) return null;
-    localizedStepByStepRef.current.en = stepByStepGuideRaw;
+    pageCache.en = stepByStepGuideRaw;
     if (targetLanguage === "en") return stepByStepGuideRaw;
-    const cached = localizedStepByStepRef.current[targetLanguage];
+    const cached = pageCache[targetLanguage];
     if (cached) return cached;
     const localized = await localizeStepByStepGuide(
       stepByStepGuideRaw,
       targetLanguage,
     );
-    localizedStepByStepRef.current[targetLanguage] = localized;
+    pageCache[targetLanguage] = localized;
     return localized;
   };
 
   const ensureLocalizedHeadings = async (
     targetLanguage: LanguageCode,
   ): Promise<Heading[]> => {
-    localizedHeadingsRef.current.en = headingsRaw;
+    const pageCache = localizedHeadingsRef.current;
+    pageCache.en = headingsRaw;
     if (targetLanguage === "en") return headingsRaw;
-    const cached = localizedHeadingsRef.current[targetLanguage];
+    const cached = pageCache[targetLanguage];
     if (cached) return cached;
     const localized = await localizeHeadings(headingsRaw, targetLanguage);
-    localizedHeadingsRef.current[targetLanguage] = localized;
+    pageCache[targetLanguage] = localized;
     return localized;
   };
 
   const ensureLocalizedMessages = async (
     targetLanguage: LanguageCode,
   ): Promise<Message[]> => {
-    localizedMessagesRef.current.en = messagesRaw;
+    const pageCache = localizedMessagesRef.current;
+    pageCache.en = messagesRaw;
     if (targetLanguage === "en") return messagesRaw;
-    const cached = localizedMessagesRef.current[targetLanguage];
+    const cached = pageCache[targetLanguage];
     const isFresh =
       Array.isArray(cached) &&
       cached.length === messagesRaw.length &&
       isMessageListPrefix(cached, messagesRaw);
     if (isFresh) return cached;
     const localized = await localizeMessages(messagesRaw, targetLanguage);
-    localizedMessagesRef.current[targetLanguage] = localized;
+    pageCache[targetLanguage] = localized;
     return localized;
   };
 
@@ -1428,18 +1513,7 @@ function App() {
     await Promise.all(tasks);
   };
 
-  useEffect(() => {
-    if (!preferencesLoaded) return;
-    void syncLocalizedContent(language);
-  }, [
-    language,
-    preferencesLoaded,
-    easyReadRaw,
-    checklistGuideRaw,
-    stepByStepGuideRaw,
-    headingsRaw,
-    messagesRaw,
-  ]);
+
 
   useEffect(() => {
     if (!easyReadRaw) return;
@@ -1449,10 +1523,12 @@ function App() {
       ms: null,
       ta: null,
     };
+    const pageCache = localizedEasyReadRef.current;
     void (async () => {
       for (const lang of SUPPORTED_LANGUAGES) {
         if (lang === "en") continue;
-        if (localizedEasyReadRef.current[lang]) continue;
+        if (localizedEasyReadRef.current !== pageCache) return;
+        if (pageCache[lang]) continue;
         await ensureLocalizedEasyRead(lang);
       }
     })();
@@ -1466,10 +1542,12 @@ function App() {
       ms: null,
       ta: null,
     };
+    const pageCache = localizedChecklistRef.current;
     void (async () => {
       for (const lang of SUPPORTED_LANGUAGES) {
         if (lang === "en") continue;
-        if (localizedChecklistRef.current[lang]) continue;
+        if (localizedChecklistRef.current !== pageCache) return;
+        if (pageCache[lang]) continue;
         await ensureLocalizedChecklist(lang);
       }
     })();
@@ -1483,10 +1561,12 @@ function App() {
       ms: null,
       ta: null,
     };
+    const pageCache = localizedStepByStepRef.current;
     void (async () => {
       for (const lang of SUPPORTED_LANGUAGES) {
         if (lang === "en") continue;
-        if (localizedStepByStepRef.current[lang]) continue;
+        if (localizedStepByStepRef.current !== pageCache) return;
+        if (pageCache[lang]) continue;
         await ensureLocalizedStepByStep(lang);
       }
     })();
@@ -1500,10 +1580,12 @@ function App() {
       ta: null,
     };
     if (!headingsRaw.length) return;
+    const pageCache = localizedHeadingsRef.current;
     void (async () => {
       for (const lang of SUPPORTED_LANGUAGES) {
         if (lang === "en") continue;
-        if (localizedHeadingsRef.current[lang]) continue;
+        if (localizedHeadingsRef.current !== pageCache) return;
+        if (pageCache[lang]) continue;
         await ensureLocalizedHeadings(lang);
       }
     })();
@@ -1517,33 +1599,51 @@ function App() {
       ta: null,
     };
     if (!messagesRaw.length) return;
+    const pageCache = localizedMessagesRef.current;
     void (async () => {
       for (const lang of SUPPORTED_LANGUAGES) {
         if (lang === "en") continue;
-        if (localizedMessagesRef.current[lang]) continue;
+        if (localizedMessagesRef.current !== pageCache) return;
+        if (pageCache[lang]) continue;
         await ensureLocalizedMessages(lang);
       }
     })();
   }, [messagesRaw]);
 
+  useEffect(() => {
+    if (!preferencesLoaded) return;
+    void syncLocalizedContent(language);
+  }, [
+    language,
+    preferencesLoaded,
+    easyReadRaw,
+    checklistGuideRaw,
+    stepByStepGuideRaw,
+    headingsRaw,
+    messagesRaw,
+  ]);
+
   const getUrlForSimplify = async (): Promise<string> => {
-    if (currentUrl) return currentUrl;
     const tabs = await browser.tabs.query({
       active: true,
-      currentWindow: true,
+      ...(panelWindowIdRef.current === null ? { currentWindow: true } : { windowId: panelWindowIdRef.current }),
     });
     const url = tabs[0]?.url;
     if (!url) throw new Error("No URL available");
-    setCurrentUrl(url);
+    const tabId = tabs[0]?.id ?? null;
+    if (tabId !== currentTabId || url !== currentUrl || tabId !== activeTabIdRef.current || url !== currentUrlRef.current) {
+      throw new DOMException("Page changed", "AbortError");
+    }
     return url;
   };
 
   const simplifyWithFallback = async (
     url: string,
     mode: ReadingMode | "all" | "intelligent",
+    signal?: AbortSignal,
   ) => {
     try {
-      return await simplifyPage(url, mode, "en", sessionId);
+      return await simplifyPage(url, mode, "en", sessionId, false, signal);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       const shouldRetry =
@@ -1554,7 +1654,14 @@ function App() {
         "[Sidepanel] simplifyPage failed; retrying with intelligent mode:",
         { mode, msg },
       );
-      return await simplifyPage(url, "intelligent", "en", sessionId);
+      return await simplifyPage(
+        url,
+        "intelligent",
+        "en",
+        sessionId,
+        false,
+        signal,
+      );
     }
   };
 
@@ -1668,6 +1775,7 @@ function App() {
 
   const generateGuideFromPageSnapshot = async (
     mode: "checklist" | "step_by_step",
+    signal?: AbortSignal,
   ) => {
     const snapshot = {
       title: pageTitle,
@@ -1750,6 +1858,7 @@ function App() {
           : "\n\nYour previous attempt was too generic. You MUST ground steps in INTERACTIONS labels and avoid any web-search advice.\n";
       const completion = await sendTextCompletion(prompt + extra, {
         temperature: 0.2,
+        signal,
       });
       const obj = parseModelJson(completion.response);
       if (!obj || typeof obj !== "object") continue;
@@ -1768,7 +1877,20 @@ function App() {
   };
 
   const runSimplify = async (mode: ReadingMode) => {
-    if (isSimplifying) return;
+    if (isSimplifyingRef.current) return;
+    isSimplifyingRef.current = true;
+    const jobId = ++activeSimplifyJobRef.current;
+    simplifyAbortRef.current?.abort();
+    const controller = new AbortController();
+    simplifyAbortRef.current = controller;
+    let requestUrl = "";
+    let requestTabId: number | null = null;
+    const isCurrentJob = () =>
+      !controller.signal.aborted &&
+      activeSimplifyJobRef.current === jobId &&
+      currentUrlRef.current === requestUrl &&
+      activeTabIdRef.current === requestTabId;
+
     console.log("[Sidepanel] runSimplify:", { mode });
     setIsSimplifying(true);
     setSimplifyingMode(mode);
@@ -1776,6 +1898,9 @@ function App() {
 
     try {
       const url = await getUrlForSimplify();
+      requestUrl = url;
+      requestTabId = activeTabIdRef.current;
+      if (!isCurrentJob()) return;
       console.log("[Sidepanel] Calling simplifyPage API with URL:", url);
       console.log("[Sidepanel] Session ID:", sessionId);
 
@@ -1785,7 +1910,11 @@ function App() {
           pageParagraphs.length > 0 ||
           headingsRaw.length > 0;
         if (hasSnapshot) {
-          const normalized = await generateGuideFromPageSnapshot(mode);
+          const normalized = await generateGuideFromPageSnapshot(
+            mode,
+            controller.signal,
+          );
+          if (!isCurrentJob()) return;
           if (mode === "checklist") {
             setChecklistGuideRaw(normalized.checklist);
             setChecklistGuide(normalized.checklist);
@@ -1799,13 +1928,15 @@ function App() {
         }
       }
 
-      const response = await simplifyWithFallback(url, mode);
+      const response = await simplifyWithFallback(url, mode, controller.signal);
+      if (!isCurrentJob()) return;
       const normalized = normalizeReadingPayload(response);
 
       const pageIdValue = normalized.pageId || response.page_id || "";
       if (pageIdValue) {
         setPageId(pageIdValue);
         await storage.setItem(`session:pageId:${url}`, pageIdValue);
+        if (!isCurrentJob()) return;
       }
 
       const ids = {
@@ -1831,6 +1962,7 @@ function App() {
       if (pickedId) {
         setSimplificationId(pickedId);
         await storage.setItem(`session:simplificationId:${url}`, pickedId);
+        if (!isCurrentJob()) return;
       }
 
       if (normalized.easyRead) {
@@ -1878,6 +2010,14 @@ function App() {
         }
       }
     } catch (error) {
+      if (
+        controller.signal.aborted ||
+        activeSimplifyJobRef.current !== jobId ||
+        (error instanceof DOMException &&
+          error.name === "AbortError")
+      ) {
+        return;
+      }
       console.error("[Sidepanel] Failed to simplify:", error);
       console.error("[Sidepanel] Error details:", {
         message: error instanceof Error ? error.message : String(error),
@@ -1902,8 +2042,12 @@ function App() {
         setHasSteps(false);
       }
     } finally {
-      setIsSimplifying(false);
-      setSimplifyingMode(null);
+      if (activeSimplifyJobRef.current === jobId) {
+        simplifyAbortRef.current = null;
+        isSimplifyingRef.current = false;
+        setIsSimplifying(false);
+        setSimplifyingMode(null);
+      }
       console.log("[Sidepanel] runSimplify completed:", { mode });
     }
   };
@@ -1917,7 +2061,15 @@ function App() {
   };
 
   const handleElementClick = async (elementData: any) => {
+    const contextVersion = contextVersionRef.current;
+    const requestUrl = currentUrlRef.current || currentUrl;
+    const isCurrentContext = () =>
+      contextVersionRef.current === contextVersion &&
+      currentUrlRef.current === requestUrl;
     const { text, tag, src, alt, figcaption } = elementData;
+    if (chatAbortRef.current || !requestUrl || (!text?.trim() && !(tag === "img" && src?.trim()))) return;
+    const controller = new AbortController();
+    chatAbortRef.current = controller;
 
     // Images often have no textContent, so handle them separately.
     if (tag === "img") {
@@ -1937,9 +2089,10 @@ function App() {
       setMessagesRaw(updatedMessages);
       setMessages(updatedMessages);
       await storage.setItem(
-        `local:chatMessages:${currentUrl}`,
+        `local:chatMessages:${requestUrl}`,
         updatedMessages,
-      );
+      ).catch(() => {});
+      if (!isCurrentContext()) return;
 
       setIsChatLoading(true);
       setError("");
@@ -1947,10 +2100,12 @@ function App() {
         const response = await sendImageCaption(imageUrl, {
           altText: hintText || undefined,
           language,
+        signal: controller.signal,
         });
         const [localizedCaption] = await translateTextsIfNeeded([
           response.caption,
         ]);
+        if (!isCurrentContext()) return;
 
         const assistantMessage: Message = {
           id: (Date.now() + 1).toString(),
@@ -1962,11 +2117,12 @@ function App() {
         setMessagesRaw(finalMessages);
         setMessages(finalMessages);
         await storage.setItem(
-          `local:chatMessages:${currentUrl}`,
+          `local:chatMessages:${requestUrl}`,
           finalMessages,
-        );
-        maybeAutoReadAssistantReply(assistantMessage);
+        ).catch(() => {});
+        if (isCurrentContext()) maybeAutoReadAssistantReply(assistantMessage);
       } catch (error) {
+        if (!isCurrentContext()) return;
         console.error("[Sidepanel] Failed to caption image:", error);
         setError(
           error instanceof Error ? error.message : "Failed to caption image",
@@ -1982,12 +2138,15 @@ function App() {
         setMessagesRaw(finalMessages);
         setMessages(finalMessages);
         await storage.setItem(
-          `local:chatMessages:${currentUrl}`,
+          `local:chatMessages:${requestUrl}`,
           finalMessages,
-        );
-        maybeAutoReadAssistantReply(errorMessage);
+        ).catch(() => {});
+        if (isCurrentContext()) maybeAutoReadAssistantReply(errorMessage);
       } finally {
-        setIsChatLoading(false);
+        if (isCurrentContext()) {
+          chatAbortRef.current = null;
+          setIsChatLoading(false);
+        }
       }
       return;
     }
@@ -2008,7 +2167,8 @@ function App() {
     setMessages(updatedMessages);
 
     // Save to local storage
-    await storage.setItem(`local:chatMessages:${currentUrl}`, updatedMessages);
+    await storage.setItem(`local:chatMessages:${requestUrl}`, updatedMessages).catch(() => {});
+    if (!isCurrentContext()) return;
 
     // Generate AI response
     setIsChatLoading(true);
@@ -2034,10 +2194,12 @@ function App() {
       const response = await sendTextCompletion(conversationText, {
         temperature: 0.7,
         language,
+        signal: controller.signal,
       });
       const [localizedReply] = await translateTextsIfNeeded([
         response.response,
       ]);
+      if (!isCurrentContext()) return;
 
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
@@ -2050,9 +2212,10 @@ function App() {
       setMessages(finalMessages);
 
       // Save to local storage
-      await storage.setItem(`local:chatMessages:${currentUrl}`, finalMessages);
-      maybeAutoReadAssistantReply(assistantMessage);
+      await storage.setItem(`local:chatMessages:${requestUrl}`, finalMessages).catch(() => {});
+      if (isCurrentContext()) maybeAutoReadAssistantReply(assistantMessage);
     } catch (error) {
+      if (!isCurrentContext()) return;
       console.error("[Sidepanel] Failed to get AI response:", error);
       setError(
         error instanceof Error ? error.message : "Failed to get response",
@@ -2067,10 +2230,13 @@ function App() {
       const finalMessages = [...updatedMessages, errorMessage];
       setMessagesRaw(finalMessages);
       setMessages(finalMessages);
-      await storage.setItem(`local:chatMessages:${currentUrl}`, finalMessages);
-      maybeAutoReadAssistantReply(errorMessage);
+      await storage.setItem(`local:chatMessages:${requestUrl}`, finalMessages).catch(() => {});
+      if (isCurrentContext()) maybeAutoReadAssistantReply(errorMessage);
     } finally {
-      setIsChatLoading(false);
+      if (isCurrentContext()) {
+          chatAbortRef.current = null;
+          setIsChatLoading(false);
+        }
     }
   };
 
@@ -2085,6 +2251,14 @@ function App() {
   useEffect(() => {
     const handleMessage = (message: any, sender: any, sendResponse: any) => {
       console.log("[Sidepanel] Received message:", message);
+      const senderTabId = sender?.tab?.id;
+      if (
+        typeof senderTabId !== "number" ||
+        senderTabId !== activeTabIdRef.current ||
+        !currentUrlRef.current
+      ) {
+        return false;
+      }
       if (message.type === "ELEMENT_CLICKED") {
         if (message.openChat) {
           setActiveTab("chat");
@@ -2093,6 +2267,13 @@ function App() {
       } else if (message.type === "MAGNIFYING_MODE_CHANGED") {
         setMagnifyingMode(message.enabled);
       } else if (message.type === "PAGE_LOADED") {
+        if (
+          typeof message.data?.url === "string" &&
+          currentUrlRef.current &&
+          message.data.url !== currentUrlRef.current
+        ) {
+          return false;
+        }
         const rawHeadings: Heading[] = Array.isArray(message.data?.headings)
           ? message.data.headings
           : [];
@@ -2133,39 +2314,43 @@ function App() {
   }, []);
 
   const toggleSelectionMode = async () => {
-    setSelectionMode(!selectionMode);
+    const contextVersion = contextVersionRef.current;
     try {
       const tabs = await browser.tabs.query({
         active: true,
         currentWindow: true,
       });
-      if (tabs[0]?.id) {
-        browser.tabs.sendMessage(tabs[0].id, {
+      if (tabs[0]?.id === activeTabIdRef.current && contextVersion === contextVersionRef.current) {
+        await browser.tabs.sendMessage(tabs[0]!.id!, {
           type: "TOGGLE_SELECTION_MODE",
           enabled: !selectionMode,
         });
+        if (contextVersion === contextVersionRef.current) setSelectionMode(!selectionMode);
       }
     } catch (error) {
       console.error("[Sidepanel] Failed to toggle selection mode:", error);
+      if (contextVersion === contextVersionRef.current) setError("Refresh this webpage, then try Select again.");
     }
   };
 
   const toggleMagnifyingMode = async () => {
     const nextEnabled = !magnifyingMode;
-    setMagnifyingMode(nextEnabled);
+    const contextVersion = contextVersionRef.current;
     try {
       const tabs = await browser.tabs.query({
         active: true,
         currentWindow: true,
       });
-      if (tabs[0]?.id) {
-        browser.tabs.sendMessage(tabs[0].id, {
+      if (tabs[0]?.id === activeTabIdRef.current && contextVersion === contextVersionRef.current) {
+        await browser.tabs.sendMessage(tabs[0]!.id!, {
           type: "TOGGLE_MAGNIFYING_MODE",
           enabled: nextEnabled,
         });
+        if (contextVersion === contextVersionRef.current) setMagnifyingMode(nextEnabled);
       }
     } catch (error) {
       console.error("[Sidepanel] Failed to toggle magnifying mode:", error);
+      if (contextVersion === contextVersionRef.current) setError("Refresh this webpage, then try the magnifier again.");
     }
   };
 
@@ -2192,27 +2377,22 @@ function App() {
   };
 
   const testBackendConnection = async () => {
-    try {
-      const response = await fetch("http://127.0.0.1:8000/openai-test", {
-        method: "GET",
-        signal: AbortSignal.timeout(5000), // 5 second timeout
-      });
-      if (response.ok) {
-        setBackendStatus("connected");
-      } else {
-        setBackendStatus("disconnected");
-      }
-    } catch (error) {
-      console.error("[Sidepanel] Backend connection test failed:", error);
-      setBackendStatus("disconnected");
-    }
+    const connected = await testConnection();
+    setBackendStatus(connected ? "connected" : "disconnected");
   };
 
   const handleSubmitMessage = async (e: FormEvent) => {
     e.preventDefault();
+    const contextVersion = contextVersionRef.current;
+    const requestUrl = currentUrlRef.current || currentUrl;
+    const isCurrentContext = () =>
+      contextVersionRef.current === contextVersion &&
+      currentUrlRef.current === requestUrl;
 
     const text = inputText.trim();
-    if (!text) return;
+    if (!text || chatAbortRef.current || !requestUrl) return;
+    const controller = new AbortController();
+    chatAbortRef.current = controller;
 
     // Clear input
     setInputText("");
@@ -2229,7 +2409,8 @@ function App() {
     setMessages(updatedMessages);
 
     // Save to local storage
-    await storage.setItem(`local:chatMessages:${currentUrl}`, updatedMessages);
+    await storage.setItem(`local:chatMessages:${requestUrl}`, updatedMessages).catch(() => {});
+    if (!isCurrentContext()) return;
 
     // Generate AI response
     setIsChatLoading(true);
@@ -2255,10 +2436,12 @@ function App() {
       const response = await sendTextCompletion(conversationText, {
         temperature: 0.7,
         language,
+        signal: controller.signal,
       });
       const [localizedReply] = await translateTextsIfNeeded([
         response.response,
       ]);
+      if (!isCurrentContext()) return;
 
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
@@ -2271,9 +2454,10 @@ function App() {
       setMessages(finalMessages);
 
       // Save to local storage
-      await storage.setItem(`local:chatMessages:${currentUrl}`, finalMessages);
-      maybeAutoReadAssistantReply(assistantMessage);
+      await storage.setItem(`local:chatMessages:${requestUrl}`, finalMessages).catch(() => {});
+      if (isCurrentContext()) maybeAutoReadAssistantReply(assistantMessage);
     } catch (error) {
+      if (!isCurrentContext()) return;
       console.error("[Sidepanel] Failed to get AI response:", error);
       setError(
         error instanceof Error ? error.message : "Failed to get response",
@@ -2288,10 +2472,13 @@ function App() {
       const finalMessages = [...updatedMessages, errorMessage];
       setMessagesRaw(finalMessages);
       setMessages(finalMessages);
-      await storage.setItem(`local:chatMessages:${currentUrl}`, finalMessages);
-      maybeAutoReadAssistantReply(errorMessage);
+      await storage.setItem(`local:chatMessages:${requestUrl}`, finalMessages).catch(() => {});
+      if (isCurrentContext()) maybeAutoReadAssistantReply(errorMessage);
     } finally {
-      setIsChatLoading(false);
+      if (isCurrentContext()) {
+          chatAbortRef.current = null;
+          setIsChatLoading(false);
+        }
     }
   };
 
@@ -2435,6 +2622,7 @@ function App() {
       if (value.steps?.length) out.push(t("header_steps"));
       for (let idx = 0; idx < (value.steps ?? []).length; idx += 1) {
         const s = value.steps[idx];
+        if (!s) continue;
         const stepNum = s.step ?? idx + 1;
         const title = s.title ? `${stepNum}. ${s.title}` : `${stepNum}.`;
         if (title) out.push(title);

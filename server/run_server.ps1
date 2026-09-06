@@ -12,7 +12,7 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $scriptDir
 
 if ([string]::IsNullOrWhiteSpace($BindHost)) {
-  $BindHost = "0.0.0.0"
+  $BindHost = "127.0.0.1"
 }
 
 if (-not (Test-Path ".venv")) {
@@ -26,7 +26,7 @@ if (-not (Test-Path $activatePs1)) {
 
 . $activatePs1
 
-$uvicornArgs = @("main:app", "--host", $BindHost, "--port", "$Port")
+$uvicornArgs = @("main:app", "--host", $BindHost, "--port", "$Port", "--no-proxy-headers")
 if (-not $NoReload) {
   $uvicornArgs += "--reload"
 }

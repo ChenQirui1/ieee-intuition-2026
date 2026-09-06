@@ -8,6 +8,7 @@ export default defineConfig({
     name: "ClearWeb",
     description: "Make the web easier to read and understand with AI-powered summaries and chat",
     permissions: ["storage", "tabs", "activeTab"],
+    action: { default_title: "Open ClearWeb" },
     host_permissions: [
       "<all_urls>",
       "https://translate.googleapis.com/*",

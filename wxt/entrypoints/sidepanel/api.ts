@@ -2,9 +2,55 @@
  * API service for connecting to the backend server
  */
 
-const API_BASE_URL =
-  import.meta.env.WXT_API_BASE_URL ||
-  "https://ieee-intuition-2026-production.up.railway.app";
+export const API_BASE_URL = (
+  import.meta.env.WXT_API_BASE_URL || "http://127.0.0.1:8000"
+).replace(/\/$/, "");
+const API_ACCESS_KEY = import.meta.env.WXT_API_ACCESS_KEY || "";
+
+function apiHeaders(): Record<string, string> {
+  return {
+    "Content-Type": "application/json",
+    ...(API_ACCESS_KEY ? { "X-ClearWeb-Key": API_ACCESS_KEY } : {}),
+  };
+}
+
+async function apiFetch<T>(
+  path: string,
+  init: RequestInit = {},
+  timeoutMs = 60_000,
+): Promise<T> {
+  const controller = new AbortController();
+  const externalSignal = init.signal;
+  const abortFromExternal = () => controller.abort(externalSignal?.reason);
+  if (externalSignal?.aborted) {
+    abortFromExternal();
+  } else {
+    externalSignal?.addEventListener("abort", abortFromExternal, { once: true });
+  }
+  const timeout = globalThis.setTimeout(
+    () => controller.abort(new DOMException("Request timed out", "TimeoutError")),
+    timeoutMs,
+  );
+  const headers = new Headers(init.headers);
+  for (const [name, value] of Object.entries(apiHeaders())) {
+    if (!headers.has(name)) headers.set(name, value);
+  }
+
+  try {
+    const response = await fetch(`${API_BASE_URL}${path}`, {
+      ...init,
+      headers,
+      signal: controller.signal,
+    });
+    // Keep cancellation and the deadline active while the body is read too.
+    const body = await response.text();
+    if (!response.ok) throw new Error(`API error: ${response.status} - ${body}`);
+    return JSON.parse(body) as T;
+  } finally {
+    globalThis.clearTimeout(timeout);
+    externalSignal?.removeEventListener("abort", abortFromExternal);
+  }
+}
 
 export type LanguageCode = "en" | "zh" | "ms" | "ta";
 
@@ -49,19 +95,6 @@ export interface SimplifyResponse {
   };
 }
 
-export interface ChatMessage {
-  role: "user" | "assistant" | "system";
-  content: string;
-}
-
-export interface ChatResponse {
-  ok: boolean;
-  model: string;
-  answer: string;
-  page_id?: string;
-  simplification_id?: string;
-}
-
 /**
  * Simplify a webpage URL
  */
@@ -76,6 +109,7 @@ export async function simplifyPage(
   language: LanguageCode = "en",
   sessionId?: string,
   forceRegen: boolean = false,
+  signal?: AbortSignal,
 ): Promise<SimplifyResponse> {
   console.log("[API] Calling /simplify with:", {
     url,
@@ -84,11 +118,9 @@ export async function simplifyPage(
     sessionId,
   });
 
-  const response = await fetch(`${API_BASE_URL}/simplify`, {
+  const data = await apiFetch<SimplifyResponse>("/simplify", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
+    signal,
     body: JSON.stringify({
       url,
       mode,
@@ -96,17 +128,8 @@ export async function simplifyPage(
       session_id: sessionId,
       force_regen: forceRegen,
     }),
-  });
+  }, 120_000);
 
-  console.log("[API] /simplify response status:", response.status);
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error("[API] /simplify error:", errorText);
-    throw new Error(`API error: ${response.status} - ${errorText}`);
-  }
-
-  const data = await response.json();
   console.log("[API] /simplify success:", {
     page_id: data.page_id,
     language: data.language,
@@ -117,55 +140,15 @@ export async function simplifyPage(
 }
 
 /**
- * Send a chat message
- */
-export async function sendChatMessage(
-  url: string,
-  message: string,
-  history: ChatMessage[] = [],
-  options: {
-    pageId?: string;
-    mode?: "easy_read" | "checklist" | "step_by_step";
-    language?: LanguageCode;
-    simplificationId?: string;
-    sectionId?: string;
-    sectionText?: string;
-    sessionId?: string;
-  } = {},
-): Promise<ChatResponse> {
-  const response = await fetch(`${API_BASE_URL}/chat`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      url: url || undefined,
-      page_id: options.pageId,
-      mode: options.mode || "easy_read",
-      language: options.language || "en",
-      simplification_id: options.simplificationId,
-      section_id: options.sectionId,
-      section_text: options.sectionText,
-      message,
-      history,
-      session_id: options.sessionId,
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`API error: ${response.status} - ${errorText}`);
-  }
-
-  return response.json();
-}
-
-/**
  * Send a simple text message to text-completion endpoint
  */
 export async function sendTextCompletion(
   text: string,
-  options: { temperature?: number; language?: LanguageCode } = {},
+  options: {
+    temperature?: number;
+    language?: LanguageCode;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<{ ok: boolean; model: string; response: string }> {
   const temperature = options.temperature ?? 0.7;
   const language = options.language;
@@ -192,11 +175,9 @@ export async function sendTextCompletion(
     return null;
   })();
 
-  const response = await fetch(`${API_BASE_URL}/text-completion`, {
+  const data = await apiFetch<{ ok: boolean; model: string; response: string }>("/text-completion", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
+    signal: options.signal,
     body: JSON.stringify({
       ...(languageSystemPrompt
         ? {
@@ -210,15 +191,6 @@ export async function sendTextCompletion(
     }),
   });
 
-  console.log("[API] /text-completion response status:", response.status);
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error("[API] /text-completion error:", errorText);
-    throw new Error(`API error: ${response.status} - ${errorText}`);
-  }
-
-  const data = await response.json();
   console.log("[API] /text-completion success");
 
   return data;
@@ -232,13 +204,12 @@ export async function sendImageCaption(
   options: {
     altText?: string;
     language?: LanguageCode;
+    signal?: AbortSignal;
   } = {},
 ): Promise<{ ok: boolean; model: string; caption: string }> {
-  const response = await fetch(`${API_BASE_URL}/image-caption`, {
+  return apiFetch<{ ok: boolean; model: string; caption: string }>("/image-caption", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
+    signal: options.signal,
     body: JSON.stringify({
       image_url: imageUrl,
       alt_text: options.altText,
@@ -246,12 +217,7 @@ export async function sendImageCaption(
     }),
   });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`API error: ${response.status} - ${errorText}`);
-  }
 
-  return response.json();
 }
 
 /**
@@ -259,9 +225,9 @@ export async function sendImageCaption(
  */
 export async function testConnection(): Promise<boolean> {
   try {
-    const response = await fetch(`${API_BASE_URL}/`, {
+    const response = await apiFetch<{ ok: boolean }>("/healthz", {
       method: "GET",
-    });
+    }, 5_000);
     return response.ok;
   } catch (error) {
     console.error("Backend connection test failed:", error);

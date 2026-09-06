@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Literal
 
-from pydantic import AnyUrl, BaseModel, ConfigDict, Field
-
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 # ----------------- Scraper models -----------------
 
+
 class PageMeta(BaseModel):
-    title: Optional[str] = None
-    description: Optional[str] = None
-    canonical: Optional[str] = None
-    lang: Optional[str] = None
+    title: str | None = None
+    description: str | None = None
+    canonical: str | None = None
+    lang: str | None = None
 
 
 class LinkItem(BaseModel):
@@ -29,26 +29,22 @@ class ImageItem(BaseModel):
 
 class ContentBlock(BaseModel):
     type: str  # heading|paragraph|list|table|quote|code|hr
-    level: Optional[int] = None
-    depth: Optional[int] = None
-    text: Optional[str] = None
-    items: Optional[List[str]] = None
-    headers: Optional[List[str]] = None
-    rows: Optional[List[List[str]]] = None
+    level: int | None = None
+    depth: int | None = None
+    text: str | None = None
+    items: list[str] | None = None
+    headers: list[str] | None = None
+    rows: list[list[str]] | None = None
 
 
 class ScrapRequest(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
-            "examples": [
-                {
-                    "url": "https://www.wikipedia.org/wiki/Web_accessibility"
-                }
-            ]
+            "examples": [{"url": "https://www.wikipedia.org/wiki/Web_accessibility"}]
         }
     )
 
-    url: AnyUrl = Field(..., description="http(s) URL to scrape")
+    url: HttpUrl = Field(..., description="http(s) URL to scrape")
 
 
 class ScrapResponse(BaseModel):
@@ -62,32 +58,28 @@ class ScrapResponse(BaseModel):
                         "title": "Web accessibility - Wikipedia",
                         "description": "Web accessibility ensures people with disabilities can use the web",
                         "canonical": "https://en.wikipedia.org/wiki/Web_accessibility",
-                        "lang": "en"
+                        "lang": "en",
                     },
                     "blocks": [
-                        {
-                            "type": "heading",
-                            "level": 1,
-                            "text": "Web accessibility"
-                        },
+                        {"type": "heading", "level": 1, "text": "Web accessibility"},
                         {
                             "type": "paragraph",
-                            "text": "Web accessibility is the inclusive practice of ensuring there are no barriers that prevent interaction with websites by people with disabilities."
-                        }
+                            "text": "Web accessibility is the inclusive practice of ensuring there are no barriers that prevent interaction with websites by people with disabilities.",
+                        },
                     ],
                     "links": [
                         {
                             "href": "https://www.w3.org/WAI/",
                             "text": "Web Accessibility Initiative",
-                            "is_internal": False
+                            "is_internal": False,
                         }
                     ],
                     "images": [
                         {
                             "src": "https://example.com/accessibility-icon.png",
-                            "alt": "Accessibility icon"
+                            "alt": "Accessibility icon",
                         }
-                    ]
+                    ],
                 }
             ]
         }
@@ -96,14 +88,14 @@ class ScrapResponse(BaseModel):
     ok: bool = True
     url: str
     meta: PageMeta
-    blocks: List[ContentBlock]
-    links: List[LinkItem]
-    images: List[ImageItem]
+    blocks: list[ContentBlock]
+    links: list[LinkItem]
+    images: list[ImageItem]
 
 
 # ----------------- Simplify (3 modes + language) -----------------
 
-Mode = Literal["easy_read", "checklist", "step_by_step", "all"]
+Mode = Literal["easy_read", "checklist", "step_by_step", "all", "intelligent"]
 Language = Literal["en", "zh", "ms", "ta"]  # English, Chinese, Malay, Tamil
 
 
@@ -116,22 +108,22 @@ class SimplifyRequest(BaseModel):
                     "mode": "all",
                     "language": "en",
                     "session_id": "user-session-123",
-                    "force_regen": False
+                    "force_regen": False,
                 },
                 {
                     "url": "https://www.cpf.gov.sg/member/faq",
                     "mode": "checklist",
                     "language": "zh",
-                    "force_regen": True
-                }
+                    "force_regen": True,
+                },
             ]
         }
     )
 
-    url: AnyUrl
+    url: HttpUrl
     mode: Mode = "all"
     language: Language = "en"
-    session_id: Optional[str] = None
+    session_id: str | None = None
     force_regen: bool = False
 
 
@@ -145,26 +137,24 @@ class SimplifyResponse(BaseModel):
                     "page_id": "page_abc123def456",
                     "source_text_hash": "sha256_hash_here",
                     "language": "en",
-                    "model": "gpt-3.5-turbo-0125",
+                    "model": "gpt-5.6-luna",
                     "outputs": {
                         "intelligent": {
                             "summary": "Form 1040 is the standard U.S. tax return form used to report your income and calculate your taxes.",
                             "key_points": [
                                 "Used by individuals to file annual income taxes",
                                 "Reports all sources of income including wages, investments, and business income",
-                                "Calculates total tax owed or refund due"
+                                "Calculates total tax owed or refund due",
                             ],
                             "action_items": [
                                 "Gather W-2 forms from all employers",
                                 "Collect 1099 forms for other income",
                                 "Review deductions and credits you qualify for",
-                                "File by April 15th deadline"
-                            ]
+                                "File by April 15th deadline",
+                            ],
                         }
                     },
-                    "simplification_ids": {
-                        "intelligent": "simpl_xyz789abc123"
-                    }
+                    "simplification_ids": {"intelligent": "simpl_xyz789abc123"},
                 }
             ]
         }
@@ -176,15 +166,17 @@ class SimplifyResponse(BaseModel):
     source_text_hash: str
     language: Language
     model: str
-    outputs: Dict[str, Any]                # keys: easy_read, checklist, step_by_step
-    simplification_ids: Dict[str, str]     # mode -> simplification doc id
+    outputs: dict[str, Any]  # keys: easy_read, checklist, step_by_step
+    simplification_ids: dict[str, str]  # mode -> simplification doc id
 
 
 # ----------------- Contextual chatbot (+ section-level + language) -----------------
 
+
 class ChatMessage(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
     role: Literal["user", "assistant", "system"]
-    content: str
+    content: str = Field(min_length=1, max_length=12_000)
 
 
 class ChatRequest(BaseModel):
@@ -199,14 +191,14 @@ class ChatRequest(BaseModel):
                     "history": [
                         {
                             "role": "user",
-                            "content": "Can you explain what Form 1040 is?"
+                            "content": "Can you explain what Form 1040 is?",
                         },
                         {
                             "role": "assistant",
-                            "content": "Form 1040 is the main tax form you use to report your income to the IRS each year."
-                        }
+                            "content": "Form 1040 is the main tax form you use to report your income to the IRS each year.",
+                        },
                     ],
-                    "session_id": "user-session-123"
+                    "session_id": "user-session-123",
                 },
                 {
                     "page_id": "page_abc123def456",
@@ -214,25 +206,29 @@ class ChatRequest(BaseModel):
                     "language": "zh",
                     "section_text": "Filing Requirements",
                     "message": "我需要提交哪些文件？",
-                    "history": []
-                }
+                    "history": [],
+                },
             ]
         }
     )
 
-    url: Optional[AnyUrl] = None
-    page_id: Optional[str] = None
+    url: HttpUrl | None = None
+    page_id: str | None = None
 
     mode: Literal["easy_read", "checklist", "step_by_step"] = "easy_read"
     language: Language = "en"
-    simplification_id: Optional[str] = None
+    simplification_id: str | None = None
 
-    section_id: Optional[str] = Field(None, description="Optional section identifier in your UI")
-    section_text: Optional[str] = Field(None, description="Exact text user is asking about")
+    section_id: str | None = Field(
+        None, description="Optional section identifier in your UI"
+    )
+    section_text: str | None = Field(
+        None, description="Exact text user is asking about"
+    )
 
     message: str = Field(..., min_length=1)
-    history: List[ChatMessage] = []
-    session_id: Optional[str] = None
+    history: list[ChatMessage] = Field(default_factory=list, max_length=12)
+    session_id: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -241,10 +237,10 @@ class ChatResponse(BaseModel):
             "examples": [
                 {
                     "ok": True,
-                    "model": "gpt-3.5-turbo-0125",
+                    "model": "gpt-5.6-luna",
                     "answer": "To file your taxes, you'll need: 1) W-2 forms from your employer, 2) 1099 forms for other income like freelance work or investments, 3) Records of deductible expenses, and 4) Your Social Security number.",
                     "page_id": "page_abc123def456",
-                    "simplification_id": "simpl_xyz789abc123"
+                    "simplification_id": "simpl_xyz789abc123",
                 }
             ]
         }
@@ -253,11 +249,12 @@ class ChatResponse(BaseModel):
     ok: bool = True
     model: str
     answer: str
-    page_id: Optional[str] = None
-    simplification_id: Optional[str] = None
+    page_id: str | None = None
+    simplification_id: str | None = None
 
 
 # ----------------- Simple text completion -----------------
+
 
 class TextCompletionRequest(BaseModel):
     model_config = ConfigDict(
@@ -265,18 +262,37 @@ class TextCompletionRequest(BaseModel):
             "examples": [
                 {
                     "text": "Explain quantum computing in simple terms",
-                    "temperature": 0.7
+                    "temperature": 0.7,
                 },
-                {
-                    "text": "Write a haiku about programming",
-                    "temperature": 1.2
-                }
+                {"text": "Write a haiku about programming", "temperature": 1.2},
             ]
         }
     )
 
-    text: str = Field(..., min_length=1, description="Text prompt to send to OpenAI")
-    temperature: float = Field(0.7, ge=0.0, le=2.0, description="Temperature for response randomness")
+    text: str | None = Field(
+        None,
+        min_length=1,
+        max_length=12_000,
+        description="Text prompt to send to OpenAI",
+    )
+    messages: list[ChatMessage] | None = Field(None, min_length=1, max_length=12)
+    temperature: float = Field(
+        0.7, ge=0.0, le=2.0, description="Temperature for response randomness"
+    )
+
+    @model_validator(mode="after")
+    def validate_prompt_shape(self):
+        if (self.text is None) == (self.messages is None):
+            raise ValueError("Provide exactly one of 'text' or 'messages'")
+        if self.text is not None:
+            self.text = self.text.strip()
+            if not self.text:
+                raise ValueError("'text' cannot be blank")
+        if self.messages is not None:
+            total_chars = sum(len(message.content) for message in self.messages)
+            if total_chars > 16_000:
+                raise ValueError("Message content exceeds the 16000 character limit")
+        return self
 
 
 class TextCompletionResponse(BaseModel):
@@ -285,8 +301,8 @@ class TextCompletionResponse(BaseModel):
             "examples": [
                 {
                     "ok": True,
-                    "model": "gpt-3.5-turbo-0125",
-                    "response": "Quantum computing uses quantum mechanics principles like superposition and entanglement to process information. Unlike regular computers that use bits (0 or 1), quantum computers use qubits that can be both 0 and 1 simultaneously, allowing them to solve certain problems much faster."
+                    "model": "gpt-5.6-luna",
+                    "response": "Quantum computing uses quantum mechanics principles like superposition and entanglement to process information. Unlike regular computers that use bits (0 or 1), quantum computers use qubits that can be both 0 and 1 simultaneously, allowing them to solve certain problems much faster.",
                 }
             ]
         }
@@ -295,3 +311,15 @@ class TextCompletionResponse(BaseModel):
     ok: bool = True
     model: str
     response: str
+
+
+class ImageCaptionRequest(BaseModel):
+    image_url: HttpUrl
+    alt_text: str | None = Field(None, max_length=1_000)
+    language: Language = "en"
+
+
+class ImageCaptionResponse(BaseModel):
+    ok: bool = True
+    model: str
+    caption: str

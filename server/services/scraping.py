@@ -1,13 +1,11 @@
 """Scraping service - handles web scraping and content extraction."""
 
 import hashlib
-from typing import Any, Dict, List
-from urllib.parse import urlparse
+from typing import Any
 
 from fastapi import HTTPException
 
 from services.scraper import (
-    assert_public_hostname,
     extract_blocks_in_order,
     extract_links_and_images,
     extract_meta,
@@ -31,9 +29,9 @@ def _safe_trim_blocks(blocks, max_blocks: int = 200, max_total_chars: int = 80_0
     return trimmed
 
 
-def blocks_to_text(blocks: List[Dict[str, Any]], max_chars: int = 24_000) -> str:
+def blocks_to_text(blocks: list[dict[str, Any]], max_chars: int = 24_000) -> str:
     """Convert blocks to plain text representation."""
-    out: List[str] = []
+    out: list[str] = []
     for b in blocks:
         t = b.get("type")
         if t == "heading":
@@ -66,17 +64,16 @@ def blocks_to_text(blocks: List[Dict[str, Any]], max_chars: int = 24_000) -> str
     return "\n".join(out)[:max_chars]
 
 
-def scrape_url(url: str, db, session_id: str = None) -> Dict[str, Any]:
+def scrape_url(url: str, db, session_id: str | None = None) -> dict[str, Any]:
     """Scrape a URL and save to database. Returns page data."""
     from database.interface import page_id_for_url
 
-    host = urlparse(url).hostname or ""
-    assert_public_hostname(host)
-
     try:
         soup = fetch_and_parse_html(url)
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch/parse HTML: {e}")
+        raise HTTPException(status_code=502, detail="Failed to fetch/parse HTML") from e
 
     meta = extract_meta(soup, url)
     remove_non_content(soup)

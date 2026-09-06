@@ -23,8 +23,8 @@ else
   exit 1
 fi
 
-HOST="${HOST:-0.0.0.0}"
+HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8000}"
 
 echo "Starting FastAPI server on http://$HOST:$PORT"
-exec python -m uvicorn main:app --host "$HOST" --port "$PORT" --reload
+exec python -m uvicorn main:app --host "$HOST" --port "$PORT" --no-proxy-headers --reload
